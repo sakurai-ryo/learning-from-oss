@@ -1,7 +1,7 @@
 {
   "name": "",
-  "type": "module",
   "version": "0.0.1",
+  "type": "module",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
@@ -13,5 +13,16 @@
     "@astrojs/starlight": "^0.41.9",
     "astro": "^7.1.6",
     "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.24.0",
+      "onFail": "download"
+    }
   }
 }
