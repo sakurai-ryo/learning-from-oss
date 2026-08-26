@@ -19,7 +19,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.1.2
+      - uses: actions/checkout@v7.0.1
       # v1 タグは更新が止まっているため、setup-vp は正確なバージョンを指定する
       - uses: voidzero-dev/setup-vp@v1.18.0
         with:
