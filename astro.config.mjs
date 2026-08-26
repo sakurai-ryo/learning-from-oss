@@ -6,6 +6,9 @@ const repoUrl = "https://github.com/sakurai-ryo/learning-from-oss";
 
 // https://astro.build/config
 export default defineConfig({
+  // GitHub Pages のプロジェクトサイト (https://sakurai-ryo.github.io/learning-from-oss/) に配信する
+  site: "https://sakurai-ryo.github.io",
+  base: "/learning-from-oss",
   integrations: [
     starlight({
       title: "Learning from OSS",
