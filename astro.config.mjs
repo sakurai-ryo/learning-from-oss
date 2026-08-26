@@ -2,25 +2,29 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
+const repoUrl = "https://github.com/sakurai-ryo/learning-from-oss";
+
 // https://astro.build/config
 export default defineConfig({
   integrations: [
     starlight({
-      title: "My Docs",
-      social: [{ icon: "github", label: "GitHub", href: "https://github.com/withastro/starlight" }],
-      sidebar: [
-        {
-          label: "Guides",
-          items: [
-            // Each item here is one entry in the navigation menu.
-            { label: "Example Guide", slug: "guides/example" },
-          ],
-        },
-        {
-          label: "Reference",
-          items: [{ autogenerate: { directory: "reference" } }],
-        },
-      ],
+      title: "Learning from OSS",
+      description:
+        "OSS のソースコードを読んで学んだことを、OSS ごとの章にまとめていくドキュメントサイト。",
+      defaultLocale: "root",
+      locales: {
+        root: { label: "日本語", lang: "ja" },
+      },
+      social: [{ icon: "github", label: "GitHub", href: repoUrl }],
+      editLink: { baseUrl: `${repoUrl}/edit/main/` },
+      lastUpdated: true,
+      routeMiddleware: "./src/starlight-route-data.ts",
+      components: {
+        PageTitle: "./src/components/PageTitle.astro",
+      },
+      // src/content/docs/oss/ 配下のディレクトリが 1 つの OSS の章になる。
+      // 章を追加するときにこの設定を変更する必要はない。
+      sidebar: [{ autogenerate: { directory: "oss", collapsed: true } }],
     }),
   ],
 });

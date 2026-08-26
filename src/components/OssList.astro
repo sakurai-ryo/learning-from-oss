@@ -1,0 +1,28 @@
+---
+import { getCollection } from "astro:content";
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+// 章の index ページ (oss/<name>) だけを一覧にする
+const chapters = (
+  await getCollection(
+    "docs",
+    (entry) => /^oss\/[^/]+$/.test(entry.id) && (!import.meta.env.PROD || !entry.data.draft),
+  )
+).sort((a, b) => a.id.localeCompare(b.id));
+---
+
+{
+  chapters.length === 0 ? (
+    <p>まだ章がありません。</p>
+  ) : (
+    <CardGrid>
+      {chapters.map((chapter) => (
+        <LinkCard
+          title={chapter.data.title}
+          description={chapter.data.description}
+          href={`${import.meta.env.BASE_URL}${chapter.id}/`}
+        />
+      ))}
+    </CardGrid>
+  )
+}

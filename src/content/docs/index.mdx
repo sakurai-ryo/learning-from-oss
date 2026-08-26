@@ -1,39 +1,30 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: Learning from OSS
+description: OSS のソースコードを読んで学んだことを、OSS ごとの章にまとめていくドキュメントサイト。
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
-  image:
-    file: ../../assets/houston.webp
+  tagline: OSS のソースコードを読んで学んだことを、OSS ごとに一章ずつ積み上げていく。
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: OSS 一覧を見る
+      link: /oss/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+    - text: GitHub
+      link: https://github.com/sakurai-ryo/learning-from-oss
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 
-## Next steps
-
 <CardGrid stagger>
-  <Card title="Update content" icon="pencil">
-    Edit `src/content/docs/index.mdx` to see this page change.
+  <Card title="OSS ごとに一章" icon="open-book">
+    章の先頭には対象リポジトリ・言語・読んだ時点のバージョンをまとめた概要ページを置く。
   </Card>
-  <Card title="Change page layout" icon="document">
-    Delete `template: splash` in `src/content/docs/index.mdx` to display a sidebar on this page.
+  <Card title="学び 1 つにつき 1 ページ" icon="document">
+    「何を学んだか」「ソースコードのどこか」「なぜそうなっているか」「どう活かすか」を 1
+    ページに書く。
   </Card>
-  <Card title="Add new content" icon="add-document">
-    Add Markdown or MDX files to `src/content/docs` to create new pages.
-  </Card>
-  <Card title="Configure your site" icon="setting">
-    Edit your `sidebar` and other config in `astro.config.mjs`.
-  </Card>
-  <Card title="Read the docs" icon="open-book">
-    Learn more in [the Starlight Docs](https://starlight.astro.build/).
+  <Card title="少しずつ追加" icon="add-document">
+    ディレクトリを 1 つ足せば章が増える。設定ファイルの変更は不要。
   </Card>
 </CardGrid>

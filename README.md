@@ -1,49 +1,64 @@
-# Starlight Starter Kit: Basics
+# Learning from OSS
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+OSS のソースコードを読んで学んだことを、OSS ごとの章にまとめていくドキュメントサイト。
+[Astro](https://astro.build) + [Starlight](https://starlight.astro.build) で構築している。
 
-```
-pnpm create astro@latest -- --template starlight
-```
+## セットアップ
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```sh
+vp install
+vp run dev      # 開発サーバー (localhost:4321)
+vp run build    # 本番ビルド (dist/)
+vp run preview  # ビルド結果のプレビュー
+vp check        # フォーマット・lint・型チェック
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## ディレクトリ構成
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+```
+src/
+├── content/docs/
+│   ├── index.mdx            # トップページ
+│   └── oss/
+│       ├── index.mdx        # OSS 一覧 (章の index ページを自動で列挙)
+│       ├── sample/          # 章のサンプル (draft のため本番ビルドには含まれない)
+│       └── <oss-name>/      # OSS ごとの章
+│           ├── index.md     # 章の概要 (oss メタデータ付き)
+│           └── <topic>.md   # 学び 1 つにつき 1 ページ
+├── components/
+│   ├── OssList.astro        # 章一覧カード
+│   └── PageTitle.astro      # タイトル下に oss メタデータを表示
+├── starlight-route-data.ts  # サイドバーのグループ名を章タイトルで置き換える
+└── content.config.ts        # frontmatter スキーマ (oss フィールドの定義)
+```
 
-Static assets, like favicons, can be placed in the `public/` directory.
+## 章の追加
 
-## 🧞 Commands
+1. `src/content/docs/oss/sample/` を `src/content/docs/oss/<oss-name>/` にコピーする
+2. 各ページの `draft: true` を削除する
+3. `index.md` の frontmatter を書き換える
 
-All commands are run from the root of the project, from a terminal:
+```yaml
+title: DataLoader # サイドバーのグループ名と一覧カードに使われる
+description: 一覧カードの説明文
+oss:
+  repo: https://github.com/graphql/dataloader
+  language: JavaScript # 任意
+  ref: v2.2.2 # 任意。読んだ時点のタグやコミット
+sidebar:
+  label: 概要
+  order: 0
+```
 
-| Command                | Action                                           |
-| :--------------------- | :----------------------------------------------- |
-| `pnpm install`         | Installs dependencies                            |
-| `pnpm dev`             | Starts local dev server at `localhost:4321`      |
-| `pnpm build`           | Build your production site to `./dist/`          |
-| `pnpm preview`         | Preview your build locally, before deploying     |
-| `pnpm astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `pnpm astro -- --help` | Get help using the Astro CLI                     |
+4. 学びごとに `<topic>.md` を追加する。`sidebar.order` で並び順を指定できる (未指定はファイル名順)
 
-## 👀 Want to learn more?
+サイドバーは `src/content/docs/oss/` 配下を自動生成しているため、`astro.config.mjs` の変更は不要。
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+## ページの構成
+
+学び 1 つにつき 1 ページ。見出しは次の 4 つを基本にする。
+
+1. 何を学んだか — 結論を先に
+2. ソースコードのどこか — タグやコミットを含む URL とコード引用
+3. なぜそうなっているか — Issue / PR / コメント / テストから読み取れる意図
+4. どう活かすか — 取り込み方と、取り込むべきでない条件

@@ -1,0 +1,56 @@
+---
+import Default from "@astrojs/starlight/components/PageTitle.astro";
+
+const { oss } = Astro.locals.starlightRoute.entry.data;
+---
+
+<Default />
+{
+  oss && (
+    <dl class="oss-meta">
+      <div>
+        <dt>Repository</dt>
+        <dd>
+          <a href={oss.repo} rel="noopener">
+            {oss.repo.replace(/^https?:\/\/(www\.)?/, "")}
+          </a>
+        </dd>
+      </div>
+      {oss.language && (
+        <div>
+          <dt>Language</dt>
+          <dd>{oss.language}</dd>
+        </div>
+      )}
+      {oss.ref && (
+        <div>
+          <dt>Ref</dt>
+          <dd>
+            <code>{oss.ref}</code>
+          </dd>
+        </div>
+      )}
+    </dl>
+  )
+}
+
+<style>
+  .oss-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    margin-top: 0.75rem;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-2);
+  }
+  .oss-meta div {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .oss-meta dt {
+    font-weight: 600;
+  }
+  .oss-meta dd {
+    margin: 0;
+  }
+</style>
