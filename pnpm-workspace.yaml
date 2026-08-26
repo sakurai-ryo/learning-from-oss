@@ -11,3 +11,7 @@ peerDependencyRules:
     - vite
   allowedVersions:
     vite: "*"
+# pnpm 11 は公開 24 時間未満のパッケージを拒否する (minimumReleaseAge)。
+# starlight は公開直後の版を使うことがあるので例外にする
+minimumReleaseAgeExclude:
+  - "@astrojs/starlight"
