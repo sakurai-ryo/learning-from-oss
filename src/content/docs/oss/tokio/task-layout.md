@@ -1,6 +1,7 @@
 ---
 title: "1 回のアロケーションに hot と cold を並べ、型情報は vtable のオフセットとして持つ"
 description: "Tokio のタスクは header・core・trailer の 3 区画を 1 個の Box に押し込む。ランタイムが持ち回るのは先頭の header へのポインタだけで、型が消えている。それでも後ろの区画に届くのは、各フィールドのバイトオフセットを const fn で計算して vtable に埋め込んでいるからだ。関数ポインタのテーブルに整数を混ぜる、という珍しい形をしている。"
+group: "タスク"
 sidebar:
   order: 3
 ---

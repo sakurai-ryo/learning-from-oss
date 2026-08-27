@@ -1,6 +1,7 @@
 ---
 title: "スキーマが後から生えてくる入力を列指向のバッファに詰める。列が現れた時点で過去の行ぶんの null を埋め、行の終わりで来なかった列に null を足す"
 description: "line protocol は行ごとにフィールドの集合が違う。InfluxDB 3 のメモリバッファは列ごとの Arrow builder を持ち、新しい列が現れたらその場で builder を作って過去の行数ぶんの null を先に append する。行の処理の最後に、値が来なかった列へ null を足す。この 2 つで「全 builder の長さが常に等しい」が保たれる。Arrow の 32 ビットオフセット制限 (2 GiB) はチャンク分割で回避し、builder の容量は既定値ではなく実際の行数から決める。"
+group: "ストレージ"
 sidebar:
   order: 4
 ---

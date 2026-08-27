@@ -1,6 +1,7 @@
 ---
 title: "readiness 型と完了型の I/O を、1 つの `Completion` に揃える"
 description: "同期 pread、io_uring、Windows IOCP、メモリ、そしてテスト用の細工つき実装。全部が同じ `IO` trait の裏にいて、エンジン側のコードは 1 通りしかない。鍵は「Completion は返した時点で既に完了しているかもしれない」を許したことで、これで同期バックエンドも非同期バックエンドも同じ経路を通る。完了型の I/O 特有の「カーネルが読み終わるまでバッファを手放せない」という制約も、Completion が抱える形で吸収している。"
+group: "実行モデル"
 sidebar:
   order: 5
 ---

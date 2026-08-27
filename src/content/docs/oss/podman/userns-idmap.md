@@ -1,6 +1,7 @@
 ---
 title: "uid のマッピングは setuid ヘルパーに書かせ、コンテナ側は「中間 ID」に対する二段目として作る"
 description: "非特権プロセスが /proc/<pid>/uid_map に書けるのは自分の uid 1 行だけ。subuid の範囲を使うには setuid root の newuidmap に検証させて書かせる。コンテナの --userns=keep-id や nomap は、その rootless namespace の内側にもう 1 段作るマッピングで、親 namespace の範囲に収まるよう分割してから OCI ランタイムに渡す。"
+group: "rootless"
 sidebar:
   order: 6
 ---

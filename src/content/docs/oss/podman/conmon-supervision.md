@@ -1,6 +1,7 @@
 ---
 title: "コンテナの監視を小さな別プロセスに委ね、CLI 自身はいつ終了してもよい設計にする"
 description: "podman run はコンテナの親ではない。コンテナごとに conmon という小さなプロセスを起動し、conmon が OCI ランタイムを fork して親になる。Podman は conmon が double fork を終えるのを待つだけで終了できる。終了の通知はファイルシステム (exit file) と「後始末コマンドを新しい Podman プロセスとして起動する」ことで行い、状態の真実は exit file の有無と conmon の pid が生きているかだけ。"
+group: "デーモンレス"
 sidebar:
   order: 1
 ---

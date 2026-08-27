@@ -1,6 +1,7 @@
 ---
 title: "cgroup を自分で作らず、systemd に D-Bus で「委譲済みの scope」をもらう"
 description: "cgroup v2 では、自分が所有する cgroup の下でしか子 cgroup を作れない。ログインシェルの cgroup は root 所有なので、rootless の Podman は自分自身を Delegate=true の transient scope に移してから動く。同じ D-Bus 呼び出しを pause プロセス、conmon、rootless-netns の pasta にも使い回し、systemd が無ければ警告して cgroupfs (制限なし) に倒れる。"
+group: "rootless"
 sidebar:
   order: 10
 ---

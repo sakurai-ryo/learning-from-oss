@@ -1,6 +1,7 @@
 ---
 title: "root がなければ、ネットワークスタックそのものをユーザー空間の別プロセスに置く"
 description: "rootless ではホストの netns に veth もブリッジも作れない。Podman の既定は、コンテナの netns に tap を作り、ホスト側は普通のソケット API で中継する pasta をコンテナごとに 1 つ起動すること。pasta は準備が済むと fork して親が終了し、netns が消えると自動で終わるので、Podman 側に同期も後始末も要らない。"
+group: "rootless"
 sidebar:
   order: 8
 ---

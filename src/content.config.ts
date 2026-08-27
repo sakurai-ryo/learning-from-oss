@@ -18,6 +18,8 @@ export const collections = {
     schema: docsSchema({
       extend: z.object({
         oss: ossSchema.optional(),
+        /** 章の中でこのページが属する群。サイドバーの中間グループになる。 */
+        group: z.string().optional(),
       }),
     }),
   }),

@@ -1,6 +1,7 @@
 ---
 title: "MySQL の語彙で読む Turso のアーキテクチャ"
 description: "Turso には接続を待ち受けるサーバプロセスがない。接続はただの構造体で、クエリを進めるのは呼び出し元のスレッドだ。それでも「接続」「トランザクション」「カーソル」「バッファプール」「redo ログ」という語彙はほぼそのまま通じる。この章の他のページが使う語彙 (Database、Connection、Pager、WAL、VDBE、IOResult、StepResult) を、MySQL との対応で先に導入する。"
+group: "前提"
 sidebar:
   order: 1
 ---

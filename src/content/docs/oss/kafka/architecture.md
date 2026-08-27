@@ -1,6 +1,7 @@
 ---
 title: "Kafka のアーキテクチャを一枚で読む"
 description: "Kafka の中心にあるのは、ディスク上の追記専用ファイルの列だ。topic・partition・offset・replica・consumer group・controller という語彙は、すべてこのファイルの上に定義されている。この章の他のページが前提にする語彙と、ブローカープロセスの中身を、ここで先に導入する。"
+group: "前提"
 sidebar:
   order: 1
 ---

@@ -1,6 +1,7 @@
 ---
 title: "特権を要る仕事だけを親に残し、fork の前にソケットを開いてしまう"
 description: "master は root のまま残り、worker は setuid して非特権になる。80 番ポートの listen は fork より前に済ませてあるので、非特権のワーカーが特権ポートを持ったまま動ける。master はイベントループを持たず sigsuspend で寝るだけで、シグナルハンドラはフラグを立てるだけ。指示は情報の乗らないシグナルではなく socketpair のチャネルで送り、後から生まれた兄弟の fd は SCM_RIGHTS で配る。"
+group: "プロセスとイベント"
 sidebar:
   order: 1
 ---

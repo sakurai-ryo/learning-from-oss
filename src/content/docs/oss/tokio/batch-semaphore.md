@@ -1,6 +1,7 @@
 ---
 title: "「必要な数がそろうまで permit を溜める」待ち行列を 1 個作り、Mutex も RwLock もチャネルもその上に載せる"
 description: "Tokio の同期プリミティブは、ほぼ全部が 1 個のセマフォの上に建っている。Mutex は permit 1 個のセマフォ、RwLock の書き込みロックは permit を全部まとめて取る操作、有界チャネルは容量分の permit。まとめて取る要求が小さい要求に追い越されないよう、待ち行列は FIFO で、待っている人には permit が部分的に前渡しされる。"
+group: "同期プリミティブ"
 sidebar:
   order: 18
 ---

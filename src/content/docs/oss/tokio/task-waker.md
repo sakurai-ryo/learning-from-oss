@@ -1,6 +1,7 @@
 ---
 title: "Waker のコストを参照カウント 1 個に落とし、同じタスクへの再登録は比較だけで弾く"
 description: "Tokio の Waker は、タスク本体へのポインタ 1 個と静的な vtable でできている。poll に渡す Waker は参照カウントを増やさず ManuallyDrop で貸すだけ。wake() は「値で起こす」と「参照で起こす」で状態遷移が別々に用意され、参照カウントの受け渡しが片方だけ違う。vtable が 1 個しかないのは、will_wake の比較を成立させるためでもある。"
+group: "タスク"
 sidebar:
   order: 5
 ---

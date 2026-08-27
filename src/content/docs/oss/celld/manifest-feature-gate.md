@@ -1,6 +1,7 @@
 ---
 title: "古いノードが新しいマニフェストを「部分的に」読まないよう、必要機能を明示させる"
 description: "JSON の未知フィールドを無視する前方互換に頼ると、古いノードが新機能を含む deployment を読み込んで、リクエスト時に壊れる。`required_features` を manifest に持たせ、対応しないノードはロード時に拒否する。"
+group: "日常のエンジニアリング"
 sidebar:
   order: 12
 ---

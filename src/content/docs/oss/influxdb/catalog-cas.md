@@ -1,6 +1,7 @@
 ---
 title: "コーディネータを置かずに、連番付きの create-only PUT だけでメタデータの一貫性を保つ"
 description: "InfluxDB 3 のカタログ更新は「開始時の連番を覚える → 変更をためる → 次の連番のファイルを create-only で書く」。AlreadyExists は他ノードが先に書いた証拠なので、そこまで追いつき直して呼び出し側に Retry を返す。結果は Result ではなく Prompt<Success, Retry> という専用の型で返るので、呼び出し側はやり直しの可能性を無視できない。やり直すのは commit だけでなく、ドメインロジックごと。"
+group: "カタログ"
 sidebar:
   order: 8
 ---

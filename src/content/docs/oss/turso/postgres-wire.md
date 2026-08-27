@@ -1,6 +1,7 @@
 ---
 title: "pgwire の上に載せ、`pg_catalog` をエミュレートする"
 description: "Postgres のクライアントを繋ぐには、ワイヤプロトコルだけでは足りない。psql も ORM も、接続直後に pg_catalog に問い合わせる。Turso はそれを 20 個以上の仮想テーブルとして実装し、sqlite_schema の内容から動的に生成している。OID は名前でソートした順に振る。そして「常に空を返す表」を意図的に用意しているのが、この種の互換レイヤの実務そのものになっている。"
+group: "Postgres フロントエンド"
 sidebar:
   order: 29
 ---

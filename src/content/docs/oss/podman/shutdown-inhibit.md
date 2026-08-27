@@ -1,6 +1,7 @@
 ---
 title: "シグナルは無視せず「配送を遅らせる」。RWMutex の読み手を危険区間、書き手をハンドラにする"
 description: "SIGINT / SIGTERM を 1 パッケージで受け、名前付きハンドラを登録の逆順に実行して終了する。DB の更新と外部リソース (conmon、mount、netns、ロック) の作成が対になっている区間は Inhibit で守り、シグナルは区間が終わってから処理する。実装は RWMutex の RLock と Lock の割り当てだけで、10 行で済む。"
+group: "デーモンレス"
 sidebar:
   order: 4
 ---

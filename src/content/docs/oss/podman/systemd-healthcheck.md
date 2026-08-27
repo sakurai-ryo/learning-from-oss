@@ -1,6 +1,7 @@
 ---
 title: "常駐タイマーを持たず、systemd の transient timer に「自分自身を呼び戻させる」"
 description: "デーモンレスなので定期実行の主体がいない。Podman はコンテナ起動時に systemd-run で transient な timer + service を作り、interval ごとに podman healthcheck run を起動させる。各実行は 1 回きりで、状態はコンテナごとの JSON ファイルが状態機械として持つ。systemd が無い環境では build tag と実行時検出で黙って無効になり、フォールバック実装は無い。"
+group: "ライフサイクルと systemd 連携"
 sidebar:
   order: 14
 ---

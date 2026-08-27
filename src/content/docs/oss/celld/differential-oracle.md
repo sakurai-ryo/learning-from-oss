@@ -1,6 +1,7 @@
 ---
 title: "正解は本物の上流バイナリから取り、スキップを CI で禁止する"
 description: "crates/ltx は Litestream の LTX フォーマットを Rust に移植したもの。期待値を自分の実装から生成せず、本物の `litestream` バイナリと双方向に突き合わせる。ゴールデン fixture は上流ツールで採取し、再生成を禁じる。"
+group: "テスト"
 sidebar:
   order: 8
 ---

@@ -1,6 +1,7 @@
 ---
 title: "ISR と high watermark が決める「読んでいい範囲」"
 description: "Kafka の一貫性は、レプリカ全員の合意ではなく「ISR という集合を、リーダーが動的に出し入れする」ことで作られている。ISR の変更はコントローラが承認するので、リーダーの手元には「申請済みだがまだ承認されていない ISR」が生まれる。high watermark はその大きいほうの集合で計算される。"
+group: "レプリケーション"
 sidebar:
   order: 11
 ---

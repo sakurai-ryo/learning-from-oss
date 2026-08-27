@@ -1,6 +1,7 @@
 ---
 title: "unit ファイルを生成して配るのではなく、systemd generator として daemon-reload のたびに変換する"
 description: "Quadlet は .container や .pod のような短い宣言ファイルを、boot 時と daemon-reload 時に systemd から呼ばれて .service に変換する。元ファイルを複製して [Container] を [X-Container] にリネームし、残りの [Unit] / [Service] / [Install] は素通しにするので systemd の全機能が使える。生成される podman run は --replace --rm -d --cgroups=split --sdnotify=conmon で、conmon が MAINPID になる。テストデータはアサーションをコメントとして自身に埋め込む。"
+group: "ライフサイクルと systemd 連携"
 sidebar:
   order: 15
 ---

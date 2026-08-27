@@ -1,6 +1,7 @@
 ---
 title: "namespace を生かし続けるために最小のプロセスを 1 つ置き、勝者の決定はファイルの原子的な rename に任せる"
 description: "user+mount namespace は参照するプロセスが全部消えると破棄される。Podman は自分自身を _PODMAN_PAUSE=1 で exec した pause プロセスを 1 ユーザーに 1 つだけ置き、pid を renameat2(RENAME_NOREPLACE) で公開する。同時起動で負けた側は勝者に join する。Linux 6.18 以降は nsfs のファイルハンドルでプロセス自体を不要にする実験機能がある。"
+group: "rootless"
 sidebar:
   order: 7
 ---

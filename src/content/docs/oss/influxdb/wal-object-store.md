@@ -1,6 +1,7 @@
 ---
 title: "追記できないストレージの上では、WAL を「1 秒ぶんを 1 オブジェクト」にまとめ、durability の返答をそのフラッシュに相乗りさせる"
 description: "オブジェクトストアには append が無い。InfluxDB 3 は WAL を「メモリに 1 秒ぶん貯めて、1 回の PUT で 1 ファイルとして書く」形に変え、書き込み API の応答をそのフラッシュ完了に紐づける。PUT は PutMode::Create で行い、同じ node-id の別プロセスが先に書いていたら AlreadyExists を分裂脳の証拠とみなしてプロセスを落とす。ファイルはマジック 8 バイト + CRC32 + bitcode で、壊れたファイルは既定では読み飛ばす。"
+group: "ストレージ"
 sidebar:
   order: 2
 ---

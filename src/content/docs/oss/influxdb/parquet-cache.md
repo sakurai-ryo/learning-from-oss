@@ -1,6 +1,7 @@
 ---
 title: "キャッシュを ObjectStore の実装として被せ、「何を載せるか」の判断だけを外に出す"
 description: "InfluxDB 3 の Parquet キャッシュは ObjectStore trait の実装で、GET はキャッシュを見るが、ミスしても勝手には載せない。載せる判断は「オラクル」への登録という別の経路で行う。書いた直後のバイト列は即時に、クエリが要求したパスは背景で GET してから載せる。同じパスへの同時要求は Shared future を先に置くことで 1 回にまとめ、追い出しは BinaryHeap で「最も古いヒット時刻の N%」を選ぶ。"
+group: "クエリ実行"
 sidebar:
   order: 12
 ---

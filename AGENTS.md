@@ -57,6 +57,7 @@ Conventions when adding or editing content:
 
 - Chapter: `src/content/docs/oss/<oss-name>/index.md` with `oss: { repo, language?, ref? }` frontmatter and `sidebar: { label: 概要, order: 0 }`. The `title` becomes the sidebar group name (see `src/starlight-route-data.ts`).
 - One lesson per page: `src/content/docs/oss/<oss-name>/<topic>.md`, structured as 何を学んだか / ソースコードのどこか / なぜそうなっているか / どう活かすか.
+- Every lesson page needs a `group` frontmatter field. It becomes a nested sidebar group inside the chapter (see `src/starlight-route-data.ts`), and must match the grouping in the chapter index's 読む順番 section. Group order follows the lowest `sidebar.order` in each group.
 - Link to source with a URL that includes a tag or commit hash.
 - `src/content/docs/oss/sample/` is the template. It is `draft: true` and excluded from production builds; copy it and drop `draft`.
 - Write content in Japanese. Prefer local checkouts (`ghq list --full-path`) when reading OSS source.

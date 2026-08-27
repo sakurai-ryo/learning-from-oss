@@ -1,6 +1,7 @@
 ---
 title: "専用のキャッシュを SQL から使わせるとき、独自構文ではなくテーブル関数として生やし、述語は式木ではなく LiteralGuarantee で解釈する"
 description: "InfluxDB 3 の last cache は、キー列の階層で「直近 N 件」を持つ専用のメモリ構造。これを SQL から使うために、独自の構文ではなく DataFusion のテーブル関数 (last_cache('cpu')) として登録している。WHERE 句の解釈は Expr の木を場合分けせず、物理式に変換してから DataFusion の LiteralGuarantee で IN / NOT IN に蒸留する。押し込んだ述語は EXPLAIN に出る。"
+group: "クエリ実行"
 sidebar:
   order: 13
 ---

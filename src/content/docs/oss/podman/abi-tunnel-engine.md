@@ -1,6 +1,7 @@
 ---
 title: "CLI はインターフェースだけに依存させ、in-process 実装と REST 越し実装をビルドタグで物理的に切り替える"
 description: "cmd/podman は ContainerEngine / ImageEngine という 2 つの巨大なインターフェースと、その Options / Report 型にしか依存しない。実装は libpod を同一プロセスで呼ぶ abi と、HTTP クライアント経由の tunnel の 2 つ。同じ main パッケージから -tags remote の有無だけで podman と podman-remote を作り、remote ビルドからは libpod も API サーバも import 依存の時点で消える。サーバ側のハンドラは abi と同じ関数を呼ぶので、ローカルとリモートの意味論は「同じコードが別プロセスで走る」形で揃う。"
+group: "ローカルとリモート"
 sidebar:
   order: 11
 ---

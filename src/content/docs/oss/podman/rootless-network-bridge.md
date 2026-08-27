@@ -1,6 +1,7 @@
 ---
 title: "既存ツールを無改造で動かすために「自分が所有する偽のホスト」を 1 層足す"
 description: "rootless でブリッジネットワークが要るとき、Podman は netavark を書き換えない。代わりに自分の user namespace が所有する netns (rootless-netns) を 1 つ作り、書き込める /run を mount namespace で差し替えて、その中で netavark をそのまま実行する。netns の寿命は参照カウントで、外部接続はユーザー単位の pasta で、ポート公開は netns を跨いで fd を渡す rootlessport で賄う。"
+group: "rootless"
 sidebar:
   order: 9
 ---

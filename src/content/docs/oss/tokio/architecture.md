@@ -1,6 +1,7 @@
 ---
 title: "スレッドプールの言葉で読む Tokio のアーキテクチャ"
 description: "Tokio は「Future を実行する」ライブラリだが、中身は普通のスレッドプールに驚くほど似ている。タスク・実行キュー・ワーカー・park という語彙はほぼそのまま通じて、違うのは「タスクが自分から止まる」ことと「止まったタスクを起こす仕組みが要る」ことだけだ。この章の他のページが使う語彙 (task、waker、notified、core、driver、readiness、budget) を、スレッドプールとの対応で先に導入する。"
+group: "前提"
 sidebar:
   order: 1
 ---

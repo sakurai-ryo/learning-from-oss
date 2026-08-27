@@ -1,6 +1,7 @@
 ---
 title: "Go ランタイムが動く前に、C の constructor で user namespace に入る"
 description: "user namespace への setns はシングルスレッドのプロセスでしか許されない。Go の main に着く頃にはもう複数スレッドがあるので、Podman は cgo の __attribute__((constructor)) で Go より先に namespace に入る。入れなければ自分自身を clone して再 exec し、外側のプロセスはシグナルと終了コードを中継するだけの殻になる。"
+group: "rootless"
 sidebar:
   order: 5
 ---

@@ -1,6 +1,7 @@
 ---
 title: "epoll と kqueue の差を、関数ポインタ 8 本と「能力のフラグ」で吸収する"
 description: "イベント待ちの API は OS ごとに違う。Nginx は add/del/process_events など 8 本の関数ポインタで実装を差し替え、実装ごとの性質の違いは NGX_USE_* のフラグで表す。定数はそれぞれの OS のネイティブな値に define されるので変換が要らず、上位のコードは ngx_handle_read_event() を呼ぶだけで、level と edge の違いを知らずに済む。"
+group: "プロセスとイベント"
 sidebar:
   order: 3
 ---

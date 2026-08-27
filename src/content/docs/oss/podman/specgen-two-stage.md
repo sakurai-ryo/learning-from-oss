@@ -1,6 +1,7 @@
 ---
 title: "「入力の解析」「意図の表現」「実行」を分け、意図の表現をシリアライズ可能にして CLI・REST・互換 API・YAML を 1 本の実行段に合流させる"
 description: "pkg/specgen.SpecGenerator は JSON 化可能で libpod に依存しない「コンテナを作る意図」の型で、そのまま REST API のリクエストスキーマになる。CLI 引数を写す FillOutSpecGen が第 1 段、libpod を持つ側でイメージ設定とデフォルトをマージし、検証して OCI spec と libpod オプションに変換する generate パッケージが第 2 段。ローカル CLI、REST ハンドラ、kube play の 3 箇所が同じ 3 関数を呼ぶ。検証はデフォルト決定の後、実行側でだけ走る。"
+group: "ローカルとリモート"
 sidebar:
   order: 12
 ---

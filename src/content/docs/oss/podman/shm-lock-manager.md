@@ -1,6 +1,7 @@
 ---
 title: "プロセス間ロックは共有メモリに固定数確保し、番号を DB に保存して再起動後も同じロックを引き当てる"
 description: "コンテナ・Pod・Volume ごとの排他は、/dev/shm 上の pthread mutex の配列で行う。どのオブジェクトが何番を使うかは DB の JSON に保存し、次のプロセスは番号でロックを引く。mutex は robust 属性で、保持したまま死んだプロセスのロックを次の取得者が回復する。ロック順序 (Pod → Container → Volume) を守れない場面は、事前検出で失敗させるか、あえてロックを取らない。"
+group: "デーモンレス"
 sidebar:
   order: 3
 ---

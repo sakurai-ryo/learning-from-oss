@@ -1,6 +1,7 @@
 ---
 title: "KV ストアの言葉で読む etcd のデータモデルとアーキテクチャ"
 description: "etcd は「キーに値を入れる」だけの見た目をしているが、中身はリビジョンで版管理される MVCC ストアで、その上に Raft が乗り、さらにその上に watch と lease が乗っている。この章の他のページが使う語彙 (リビジョン、apply、backend、WAL、スナップショット、compaction) を、普通の KV ストアや RDB の言葉との対応で先に導入する。"
+group: "前提"
 sidebar:
   order: 1
 ---

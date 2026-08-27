@@ -1,6 +1,7 @@
 ---
 title: "前提: RDB の言葉で読む InfluxDB 3 のデータモデルとアーキテクチャ"
 description: "measurement はテーブル、tag + time は主キー、カタログは pg_catalog、DataFusion はオプティマイザ。では WAL は何で、バッファプールと B-tree はどこに行ったのか。RDB の内部構造を知っている読者に向けて、この章の他のページが前提にしている語彙と全体像を先に置く。"
+group: "前提"
 sidebar:
   order: 1
 ---
