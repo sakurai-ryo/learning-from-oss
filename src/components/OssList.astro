@@ -20,7 +20,7 @@ const chapters = (
         <LinkCard
           title={chapter.data.title}
           description={chapter.data.description}
-          href={`${import.meta.env.BASE_URL}${chapter.id}/`}
+          href={`${import.meta.env.BASE_URL.replace(/\/$/, "")}/${chapter.id}/`}
         />
       ))}
     </CardGrid>
