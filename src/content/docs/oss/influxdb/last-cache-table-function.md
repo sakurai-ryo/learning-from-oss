@@ -206,7 +206,7 @@ impl TableFunctionImpl for LastCacheFunction {
 
 [`#L351-L376`](https://github.com/influxdata/influxdb/blob/693b1fd1b96cdcb980cf76a1004c0b3f1b46db48/influxdb3_cache/src/last_cache/table_function.rs#L351-L376)。
 
-```rust title="influxdb3_cache/src/last_cache/table_function.rs"
+````rust title="influxdb3_cache/src/last_cache/table_function.rs"
 /// Custom implementor of the [`ExecutionPlan`] trait for use by the last cache
 ///
 /// Wraps a [`DataSourceExec`] from DataFusion which it relies on for the actual implementation of the
@@ -218,7 +218,7 @@ impl TableFunctionImpl for LastCacheFunction {
 /// ```text
 /// LastCacheExec: predicates=[[region@0 IN ('us-east','us-west')]] inner=[...]
 /// ```
-```
+````
 
 `execute`、`properties`、`children` はすべて内側への委譲で、独自の処理は `DisplayAs` の実装だけ。**「押し込みが効いたかどうか」をユーザーが確認できる** ためだけに、プランのノードを 1 段増やしている。
 
