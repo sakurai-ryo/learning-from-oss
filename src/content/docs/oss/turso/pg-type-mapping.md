@@ -3,7 +3,7 @@ title: "動的型付けのエンジンに、静的型のワイヤプロトコル
 description: "Postgres のプロトコルは、結果を返す前に列の型 OID を宣言しなければならない。SQLite の値は行ごとに型が違いうる。この溝を埋めるために、Turso は CREATE TYPE という汎用のカスタム型機構を先に作り、boolean や uuid や inet をその上に載せた。Postgres 方言はカスタム型機構を必須として要求する。そして型が決まらない場合の既定は TEXT で、値ごとの食い違いはエンコード側が吸収する。"
 group: "Postgres フロントエンド"
 sidebar:
-  order: 30
+  order: 51
 ---
 
 ## 何を学んだか

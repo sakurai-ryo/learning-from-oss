@@ -29,18 +29,56 @@ MySQL や PostgreSQL のようなサーバプロセスは存在しない。**接
 
 ## 読む順番
 
+このページから先は、2 つの系統が並んでいる。
+
+**「内部アーキテクチャ」の 5 群 (21 ページ)** は、エンジンを縦に貫く骨格だ。`Database::open` が何を組み立て、SQL テキストがどの型を経て 1 行になり、そのバイトがディスクのどこに置かれるか。順番に読むと、コードを開いたときに自分がどこにいるか分かるようになる。
+
+**それ以降の群 (37 ページ)** は、そこから 1 点を掘り下げたものだ。「なぜ `async` を使わないのか」「なぜ `.shm` を捨てたのか」といった設計判断を扱う。骨格側の各ページから該当箇所へリンクしてある。
+
 クラサバ型の RDB は知っているが in-process DB の内部は初めて、という場合は [アーキテクチャのページ](./architecture/) から読んでほしい。接続・トランザクション・カーソル・ページキャッシュといった語彙を、MySQL との対応で全部ここで導入する。
 
 次の [互換性の契約](./sqlite-compat/) は、この章の他のほぼ全ページの前提になる。「何が動かせなくて、何が自由なのか」がここで決まる。
-
-「実行モデル」の 4 ページは前から順に読むのがよい。特に [`IOResult` のページ](./io-result/) は、ストレージ以降のほぼ全ページから参照される。
-
-「SQL のパース」「クエリコンパイル」「同期」「品質保証」の各群は、それぞれ独立して読める。MySQL のオプティマイザと比べたい場合は [結合順序のページ](./join-order-dp/) から始めてもいい。パーサの 3 ページは前から順に読むと、「パーサジェネレータを捨てた理由」が 2 ページ目で回収される。
 
 前提:
 
 - [MySQL の語彙で読む Turso のアーキテクチャ](./architecture/)
 - [「SQLite 互換」が固定するものと、しないもの](./sqlite-compat/)
+
+エンジンの骨格 (部品と、その繋がり方):
+
+- [`Database::open` が組み立てる部品と、その所有関係](./boot-and-wiring/)
+- [クエリ 1 本の一生を、型の名前で追いかける](./query-lifecycle/)
+- [再開の状態を、誰が、どんな形で持っているか](./io-result-and-state-machine/)
+- [可変状態がどこに住んでいるか、3 段の地図を描く](./shared-state-map/)
+
+SQL からバイトコードへ (`translate` の中を順に):
+
+- [バイト列から `Cmd` へ、そして `translate_inner` の巨大な match へ](./parse-to-ast/)
+- [`Schema` はメモリに住み、cookie 1 つで作り直される](./schema-resolution/)
+- [`SelectPlan` という 1 つの構造体に、SELECT の全部が乗る](./logical-plan/)
+- [オプティマイザは Plan を書き換えるパスの列でできている](./optimizer-passes/)
+- [main_loop が、命令を吐く順番そのものを表す](./emitter-main-loop/)
+
+バイトコードの実行 (VDBE の中を順に):
+
+- [`Program` は不変、`ProgramState` が可変。この分割が再開を支える](./program-and-state/)
+- [`step()` が返す 6 つの値と、pc を保ったまま帰る作法](./step-loop/)
+- [カーソルは 1 つの trait ではなく、7 バリアントの enum](./cursor-abstraction/)
+- [コミットは 1 命令ではなく、命令の中に埋まった状態機械](./transaction-boundary/)
+
+ページとディスク (バイトの置き場所):
+
+- [ページ 0 のヘッダから cell まで、バイトを直接読む](./ondisk-format/)
+- [Pager はページの貸出係であり、巻き戻しの責任者でもある](./pager-responsibilities/)
+- [読み側の B-tree は `move_to` / `seek` / `advance` の 3 つに畳まれる](./btree-read/)
+- [insert が overflow と balance を呼び、木の形が変わる](./btree-write/)
+- [WAL のフレーム、インデックス、read mark、そして checkpoint](./wal-and-checkpoint/)
+
+並行性の層 (誰と誰が同時に触るか):
+
+- [1 プロセスの中の並行は、2 種類のロックと busy handler で捌く](./concurrency-in-process/)
+- [`WalFileShared` を複数プロセスで共有するための配線](./concurrency-multiprocess/)
+- [MVCC は Pager の下ではなく、横に積まれている](./mvcc-layer/)
 
 実行モデル (サーバがないまま、I/O で止まらない):
 

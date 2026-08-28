@@ -3,7 +3,7 @@ title: "sqlite3 に同じ SQL を流して差分を取る"
 description: "参照実装が手元にあるなら、テストの期待値を人間が書く必要はない。Turso は 5 つの層で差分テストをやっている。40 行のシェルスクリプト、両方で走る .sqltest、上流から取り込んだ 849 個の TCL テスト、SQL を自動生成して結果を比べるファジング、そして外部の SQLancer と SQLRight。判定器は「不一致」を失敗と警告に分け、ORDER BY のない LIMIT のような正当な差は警告で済ませる。"
 group: "品質保証"
 sidebar:
-  order: 37
+  order: 58
 ---
 
 ## 何を学んだか
