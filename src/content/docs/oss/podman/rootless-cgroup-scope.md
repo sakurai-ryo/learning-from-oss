@@ -3,14 +3,14 @@ title: "cgroup を自分で作らず、systemd に D-Bus で「委譲済みの s
 description: "cgroup v2 では、自分が所有する cgroup の下でしか子 cgroup を作れない。ログインシェルの cgroup は root 所有なので、rootless の Podman は自分自身を Delegate=true の transient scope に移してから動く。同じ D-Bus 呼び出しを pause プロセス、conmon、rootless-netns の pasta にも使い回し、systemd が無ければ警告して cgroupfs (制限なし) に倒れる。"
 group: "rootless"
 sidebar:
-  order: 10
+  order: 30
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-rootless に必要な委譲は user namespace だけではない。コンテナに `--memory` や `--pids-limit` をかけるには cgroup が要り、cgroup v2 の規則では **自分が所有する cgroup ディレクトリの下でしか子 cgroup を作れない**。ログインシェルが属する cgroup は通常 `session-N.scope` で、これは root 所有だ。[user namespace に入って](../constructor-reexec/) uid 0 になっても、cgroup ディレクトリの所有者は変わらない。
+rootless に必要な委譲は user namespace だけではない ([非特権でコンテナを作るのに何が要るか](../rootless-basics/) に代替経路の一覧がある)。cgroup マネージャそのものの選択については [cgroup を誰が作るか](../cgroup-manager/) を先に読むとよい。コンテナに `--memory` や `--pids-limit` をかけるには cgroup が要り、cgroup v2 の規則では **自分が所有する cgroup ディレクトリの下でしか子 cgroup を作れない**。ログインシェルが属する cgroup は通常 `session-N.scope` で、これは root 所有だ。[user namespace に入って](../constructor-reexec/) uid 0 になっても、cgroup ディレクトリの所有者は変わらない。
 
 systemd はこの問題への標準的な出口を持っている。`user@<uid>.service` に `Delegate=` された範囲の中なら、非特権ユーザーも cgroup を作れる。問題は、Podman を起動したプロセスがその範囲の中にいるとは限らないこと (`su -l` や `sudo -u` で作ったセッションが典型) だ。
 

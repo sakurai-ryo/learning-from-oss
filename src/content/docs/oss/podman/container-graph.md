@@ -1,16 +1,16 @@
 ---
 title: "依存を 1 箇所に集約して DAG を組み、起動は外向き、停止は内向きの鏡像走査にする"
 description: "Pod 内のコンテナ依存 (--requires、namespace 共有、infra) を Dependencies() で一本化し、循環があれば操作を拒否する。起動は「依存される側 → 依存する側」の逐次走査、停止と削除は「依存する側 → 依存される側」の並列走査で、訪問済みマークは処理完了後に付けてレースを防ぐ。グラフが組めないときは無順序ループに縮退し、破壊的な縮退は --force でだけ許す。"
-group: "ライフサイクルと systemd 連携"
+group: "状態をプロセスの外に置く"
 sidebar:
-  order: 13
+  order: 23
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-Pod の中のコンテナには順序がある。`--pod` で参加したコンテナは infra コンテナの network namespace を借りているので、infra が先に止まるとネットワークが消える。`--network=container:foo` や `--pid=container:foo` も同じで、`--requires` は明示的な依存だ。`podman pod start` は依存される側を先に、`podman pod stop` は依存する側を先に処理しなければならない。
+Pod の中のコンテナには順序がある ([Pod とは何か](../pods-and-infra-container/))。`--pod` で参加したコンテナは infra コンテナの network namespace を借りているので、infra が先に止まるとネットワークが消える。`--network=container:foo` や `--pid=container:foo` も同じで、`--requires` は明示的な依存だ。`podman pod start` は依存される側を先に、`podman pod stop` は依存する側を先に処理しなければならない。
 
 そして Podman は 2018 年に起動順序のためにグラフを入れ、2020 年に「停止が遅すぎる」ので停止を無順序で並列化し、2025 年に「無順序だと infra が先に死ぬ」問題で停止も順序付き並列に戻した。このジグザグが、設計の「なぜ」の中核になっている。
 

@@ -3,14 +3,14 @@ title: "namespace を生かし続けるために最小のプロセスを 1 つ�
 description: "user+mount namespace は参照するプロセスが全部消えると破棄される。Podman は自分自身を _PODMAN_PAUSE=1 で exec した pause プロセスを 1 ユーザーに 1 つだけ置き、pid を renameat2(RENAME_NOREPLACE) で公開する。同時起動で負けた側は勝者に join する。Linux 6.18 以降は nsfs のファイルハンドルでプロセス自体を不要にする実験機能がある。"
 group: "rootless"
 sidebar:
-  order: 7
+  order: 27
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-[前のページ](../userns-idmap/) までで、rootless の Podman は自分用の user+mount namespace を作り、そこで root として動くことを見た。問題は、その namespace の寿命だ。Linux の namespace は、それを参照するもの (所属するプロセス、`/proc/<pid>/ns/*` を開いた fd、bind mount) が全部無くなった瞬間に破棄される。`podman run -d` が終了してもコンテナと conmon は動き続けるので namespace は残るが、コンテナが 1 つも無い状態で `podman ps` を打てば、その Podman が終わった時点で namespace は消える。
+[前のページ](../userns-idmap/) までで、rootless の Podman は自分用の user+mount namespace を作り、そこで root として動くことを見た。問題は、その namespace の寿命だ。Linux の namespace は、それを参照するもの (所属するプロセス、`/proc/<pid>/ns/*` を開いた fd、bind mount) が全部無くなった瞬間に破棄される。同じ原理で Pod の namespace を保持するのが infra コンテナだ ([Pod とは何か](../pods-and-infra-container/))。`podman run -d` が終了してもコンテナと conmon は動き続けるので namespace は残るが、コンテナが 1 つも無い状態で `podman ps` を打てば、その Podman が終わった時点で namespace は消える。
 
 消えて困る理由は 2 つある。1 つは、mount namespace の中で行った overlay のマウントが namespace とともに消えること。もう 1 つは、次に起動した Podman が namespace を作り直すことになり、稼働中の conmon と別の namespace に入ってしまう競合が起きること。Podman はデーモンを持たないので、「namespace を保持し続ける常駐プロセス」は本来存在しない。
 

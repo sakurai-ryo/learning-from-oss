@@ -1,16 +1,16 @@
 ---
 title: "常駐タイマーを持たず、systemd の transient timer に「自分自身を呼び戻させる」"
 description: "デーモンレスなので定期実行の主体がいない。Podman はコンテナ起動時に systemd-run で transient な timer + service を作り、interval ごとに podman healthcheck run を起動させる。各実行は 1 回きりで、状態はコンテナごとの JSON ファイルが状態機械として持つ。systemd が無い環境では build tag と実行時検出で黙って無効になり、フォールバック実装は無い。"
-group: "ライフサイクルと systemd 連携"
+group: "systemd 統合"
 sidebar:
-  order: 14
+  order: 40
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-Docker の `HEALTHCHECK` は、デーモンが interval ごとにコンテナ内でコマンドを実行し、結果を覚えている。Podman には[デーモンがない](../conmon-supervision/)ので、「interval ごとに何かを実行する主体」が存在しない。`podman run` はコンテナを起動したら終了するし、conmon は監視役であってスケジューラではない。
+Docker の `HEALTHCHECK` は、デーモンが interval ごとにコンテナ内でコマンドを実行し、結果を覚えている。Podman には[デーモンがない](../conmon-supervision/)ので、「interval ごとに何かを実行する主体」が存在しない。`podman run` はコンテナを起動したら終了するし、conmon は監視役であってスケジューラではない。ヘルスチェックの実行そのものが exec セッションとしてどう走るかは [exec とヘルスチェックのプロセスはどこにぶら下がるか](../exec-and-healthcheck-processes/) を参照。
 
 ### Podman の答え
 

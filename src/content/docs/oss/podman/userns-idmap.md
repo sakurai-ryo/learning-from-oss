@@ -3,14 +3,14 @@ title: "uid のマッピングは setuid ヘルパーに書かせ、コンテナ
 description: "非特権プロセスが /proc/<pid>/uid_map に書けるのは自分の uid 1 行だけ。subuid の範囲を使うには setuid root の newuidmap に検証させて書かせる。コンテナの --userns=keep-id や nomap は、その rootless namespace の内側にもう 1 段作るマッピングで、親 namespace の範囲に収まるよう分割してから OCI ランタイムに渡す。"
 group: "rootless"
 sidebar:
-  order: 6
+  order: 26
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-[前のページ](../constructor-reexec/) で、rootless の Podman は `clone(CLONE_NEWUSER)` した子が親の合図を待ってから `setresuid(0,0,0)` する、と書いた。親が合図の前にやるのは `/proc/<pid>/uid_map` と `gid_map` を書くことだ。この 2 つのファイルが、namespace の中の uid をホストの uid にどう対応させるかを決める。
+[前のページ](../constructor-reexec/) で、rootless の Podman は `clone(CLONE_NEWUSER)` した子が親の合図を待ってから `setresuid(0,0,0)` する、と書いた。親が合図の前にやるのは `/proc/<pid>/uid_map` と `gid_map` を書くことだ。この 2 つのファイルが、namespace の中の uid をホストの uid にどう対応させるかを決める。`/etc/subuid` の割り当てがそもそも何のために要るかは [非特権でコンテナを作るのに何が要るか](../rootless-basics/) にある。
 
 書けるのは 1 回だけで、書式は `<namespace 内 ID> <親 namespace の ID> <個数>` の行を並べたもの。ここに制約がある。**特権のないプロセスが書けるのは、自分の euid をどれか 1 つの ID に対応させる 1 行だけ**。イメージに含まれる `www-data` (uid 33) や `nobody` (65534) のファイルを展開するには、複数の uid を対応させる行が要り、それを書くには親 namespace での `CAP_SETUID` が必要になる (man `user_namespaces(7)`)。
 

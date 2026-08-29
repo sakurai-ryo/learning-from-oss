@@ -3,14 +3,14 @@ title: "root がなければ、ネットワークスタックそのものをユ�
 description: "rootless ではホストの netns に veth もブリッジも作れない。Podman の既定は、コンテナの netns に tap を作り、ホスト側は普通のソケット API で中継する pasta をコンテナごとに 1 つ起動すること。pasta は準備が済むと fork して親が終了し、netns が消えると自動で終わるので、Podman 側に同期も後始末も要らない。"
 group: "rootless"
 sidebar:
-  order: 8
+  order: 28
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-root の Podman は、ホストの network namespace にブリッジを作り、veth の片側をコンテナの netns に差し込み、nftables で NAT を書く。これには `CAP_NET_ADMIN` が要る。rootless の Podman は [user namespace の中で root](../constructor-reexec/) だが、その capability は自分の namespace が所有するオブジェクトにしか効かない。ホストの netns は初期 user namespace の所有なので、そこに veth を作ることはできない。
+root の Podman は、ホストの network namespace にブリッジを作り、veth の片側をコンテナの netns に差し込み、nftables で NAT を書く。これには `CAP_NET_ADMIN` が要る。rootless の Podman は [user namespace の中で root](../constructor-reexec/) だが、その capability は自分の namespace が所有するオブジェクトにしか効かない。ホストの netns は初期 user namespace の所有なので、そこに veth を作ることはできない。ネットワークモードの全体像は [ネットワークモードと namespace の共有](../network-modes/)、ポート公開の扱いは [ポート公開はどう実現されるか](../port-forwarding/) を参照。
 
 つまり rootless では、コンテナの netns の「外側」をカーネルに作らせることができない。外側を誰かがユーザー空間で肩代わりする必要がある。
 

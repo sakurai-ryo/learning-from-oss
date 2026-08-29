@@ -3,14 +3,14 @@ title: "既存ツールを無改造で動かすために「自分が所有する
 description: "rootless でブリッジネットワークが要るとき、Podman は netavark を書き換えない。代わりに自分の user namespace が所有する netns (rootless-netns) を 1 つ作り、書き込める /run を mount namespace で差し替えて、その中で netavark をそのまま実行する。netns の寿命は参照カウントで、外部接続はユーザー単位の pasta で、ポート公開は netns を跨いで fd を渡す rootlessport で賄う。"
 group: "rootless"
 sidebar:
-  order: 9
+  order: 29
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-[前のページ](../rootless-network-pasta/) の pasta はコンテナ 1 つを外に出すには十分だが、コンテナ同士を同じサブネットに置きたい、DNS で名前解決したい、といった要求には応えられない。root の Podman はこれを netavark (Rust 製のネットワーク設定ツール) でブリッジと veth を作って実現する。netavark はホストの netns に対して動く前提で書かれていて、`/run` に状態を書き、nftables を操作し、`CAP_NET_ADMIN` を要求する。
+[前のページ](../rootless-network-pasta/) の pasta はコンテナ 1 つを外に出すには十分だが、コンテナ同士を同じサブネットに置きたい、DNS で名前解決したい、といった要求には応えられない。root の Podman はこれを netavark (Rust 製のネットワーク設定ツール) でブリッジと veth を作って実現する ([netavark と aardvark-dns](../netavark-and-aardvark/))。netavark はホストの netns に対して動く前提で書かれていて、`/run` に状態を書き、nftables を操作し、`CAP_NET_ADMIN` を要求する。
 
 rootless でこれを動かすには 2 つの選択肢がある。netavark に rootless 用の経路を追加するか、netavark の前提を満たす環境を用意するか。
 

@@ -1,16 +1,16 @@
 ---
 title: "unit ファイルを生成して配るのではなく、systemd generator として daemon-reload のたびに変換する"
 description: "Quadlet は .container や .pod のような短い宣言ファイルを、boot 時と daemon-reload 時に systemd から呼ばれて .service に変換する。元ファイルを複製して [Container] を [X-Container] にリネームし、残りの [Unit] / [Service] / [Install] は素通しにするので systemd の全機能が使える。生成される podman run は --replace --rm -d --cgroups=split --sdnotify=conmon で、conmon が MAINPID になる。テストデータはアサーションをコメントとして自身に埋め込む。"
-group: "ライフサイクルと systemd 連携"
+group: "systemd 統合"
 sidebar:
-  order: 15
+  order: 39
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-コンテナを systemd のサービスとして動かしたい。`podman generate systemd` は、その時点の Podman が知っている最善の unit ファイルを出力するコマンドだった。だが出力された unit は静的なスナップショットで、Podman を更新しても古いままだ (`KillMode=none` が非推奨になった時のように、unit の中身の「正解」は変わる)。`ExecStart` の長いコマンド行をユーザーが保守するのも辛い。
+コンテナを systemd のサービスとして動かしたい。`podman generate systemd` は、その時点の Podman が知っている最善の unit ファイルを出力するコマンドだった。だが出力された unit は静的なスナップショットで、Podman を更新しても古いままだ (`KillMode=none` が非推奨になった時のように、unit の中身の「正解」は変わる)。`ExecStart` の長いコマンド行をユーザーが保守するのも辛い。生成された unit が systemd から見て正しく振る舞うための前提は [sdnotify と MAINPID](../sdnotify-mainpid/)、Podman が systemd に渡している仕事の全体像は [Podman が systemd に委ねているものの全体像](../systemd-integration-map/) にある。
 
 ### Podman の答え
 

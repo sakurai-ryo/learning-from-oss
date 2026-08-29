@@ -3,14 +3,14 @@ title: "Go ランタイムが動く前に、C の constructor で user namespace
 description: "user namespace への setns はシングルスレッドのプロセスでしか許されない。Go の main に着く頃にはもう複数スレッドがあるので、Podman は cgo の __attribute__((constructor)) で Go より先に namespace に入る。入れなければ自分自身を clone して再 exec し、外側のプロセスはシグナルと終了コードを中継するだけの殻になる。"
 group: "rootless"
 sidebar:
-  order: 5
+  order: 25
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-rootless の Podman は、一般ユーザーとして起動されたあと、**user namespace の中で「root」として動く**。イメージのレイヤーを展開するときに複数の uid のファイルを作る必要があるし、mount namespace を持たなければ overlay をマウントできない。だから `podman ps` のような読み取り専用のコマンドでも、最初にやることは「自分のユーザーの namespace に入ること」だ。
+rootless の Podman は、一般ユーザーとして起動されたあと、**user namespace の中で「root」として動く**。イメージのレイヤーを展開するときに複数の uid のファイルを作る必要があるし、mount namespace を持たなければ overlay をマウントできない。だから `podman ps` のような読み取り専用のコマンドでも、最初にやることは「自分のユーザーの namespace に入ること」だ。なぜ user namespace が必要になるのかは [非特権でコンテナを作るのに何が要るか](../rootless-basics/) を先に読むと分かりやすい。
 
 ここに Go 固有の壁がある。`setns(fd, CLONE_NEWUSER)` と `unshare(CLONE_NEWUSER)` は、**呼び出したプロセスがマルチスレッドだと `EINVAL` で失敗する** (man `user_namespaces(7)`, `setns(2)`)。mount namespace の `setns` も、他スレッドとファイルシステム属性を共有していると同じく失敗する。Go のランタイムは `main()` に到達する前に sysmon などのスレッドを起動するので、Go のコードから namespace に入ることは原理的にできない。
 

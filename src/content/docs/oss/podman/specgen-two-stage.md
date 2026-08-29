@@ -1,16 +1,16 @@
 ---
 title: "「入力の解析」「意図の表現」「実行」を分け、意図の表現をシリアライズ可能にして CLI・REST・互換 API・YAML を 1 本の実行段に合流させる"
 description: "pkg/specgen.SpecGenerator は JSON 化可能で libpod に依存しない「コンテナを作る意図」の型で、そのまま REST API のリクエストスキーマになる。CLI 引数を写す FillOutSpecGen が第 1 段、libpod を持つ側でイメージ設定とデフォルトをマージし、検証して OCI spec と libpod オプションに変換する generate パッケージが第 2 段。ローカル CLI、REST ハンドラ、kube play の 3 箇所が同じ 3 関数を呼ぶ。検証はデフォルト決定の後、実行側でだけ走る。"
-group: "ローカルとリモート"
+group: "コンテナを作って動かす"
 sidebar:
-  order: 12
+  order: 14
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-[前のページ](../abi-tunnel-engine/)で、`ContainerEngine.ContainerCreate` の引数が JSON 化可能だから tunnel 実装が 10 行で済む、と書いた。その型 `specgen.SpecGenerator` がこのページの主題だ。
+[前のページ](../abi-tunnel-engine/)で、`ContainerEngine.ContainerCreate` の引数が JSON 化可能だから tunnel 実装が 10 行で済む、と書いた。その型 `specgen.SpecGenerator` がこのページの主題だ。この型が `podman run` の経路のどこに位置するかは [`podman run` の全経路](../podman-run-walkthrough/) を、4 つ目の入口として使われる例は [kube play](../kube-play/) を参照。
 
 コンテナを作る入口は多い。`podman run` の 200 個近いフラグ、Docker 互換 API の JSON、Podman ネイティブ API の JSON、`podman kube play` の Kubernetes YAML、`podman container clone` の既存コンテナ、`podman pod create` の infra コンテナ。これらをそれぞれ libpod の `NewContainer` に繋ぐと、デフォルト値の決定やイメージ設定のマージが入口ごとに散らばる。実際、Podman v1 の `pkg/spec` はそうなっていた。
 

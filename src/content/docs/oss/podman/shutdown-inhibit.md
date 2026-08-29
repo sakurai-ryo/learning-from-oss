@@ -1,16 +1,16 @@
 ---
 title: "シグナルは無視せず「配送を遅らせる」。RWMutex の読み手を危険区間、書き手をハンドラにする"
 description: "SIGINT / SIGTERM を 1 パッケージで受け、名前付きハンドラを登録の逆順に実行して終了する。DB の更新と外部リソース (conmon、mount、netns、ロック) の作成が対になっている区間は Inhibit で守り、シグナルは区間が終わってから処理する。実装は RWMutex の RLock と Lock の割り当てだけで、10 行で済む。"
-group: "デーモンレス"
+group: "状態をプロセスの外に置く"
 sidebar:
-  order: 4
+  order: 22
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-Podman の 1 回の操作は、[SQLite への書き込み](../sqlite-state/)と外部リソースの操作が対になっている。コンテナ作成なら「[ロックを割り当て](../shm-lock-manager/)て、DB に行を足す」。起動なら「[conmon を起動](../conmon-supervision/)して、その pid を DB に書く」。DB は ACID だが、conmon のプロセスや mount や netns はトランザクションに入らない。その途中で SIGTERM を受けて死ぬと、DB とプロセスの実体が食い違う。
+Podman の 1 回の操作は、[SQLite への書き込み](../sqlite-state/)と外部リソースの操作が対になっている。コンテナ作成なら「[ロックを割り当て](../shm-lock-manager/)て、DB に行を足す」。起動なら「[conmon を起動](../conmon-supervision/)して、その pid を DB に書く」。DB は ACID だが、conmon のプロセスや mount や netns はトランザクションに入らない。この危険区間が `podman run` のどこにあるかは [`podman run` の全経路](../podman-run-walkthrough/) で見た 2 か所にあたる。その途中で SIGTERM を受けて死ぬと、DB とプロセスの実体が食い違う。
 
 一方で、`podman run` で Ctrl-C したときはコンテナにシグナルを転送したいし、`podman system service` を `systemctl stop` したときは graceful に止めて終了コード 0 を返したい。シグナルの扱いはコマンドごとに違う。
 

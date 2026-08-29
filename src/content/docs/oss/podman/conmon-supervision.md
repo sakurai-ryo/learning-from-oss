@@ -1,9 +1,9 @@
 ---
 title: "コンテナの監視を小さな別プロセスに委ね、CLI 自身はいつ終了してもよい設計にする"
 description: "podman run はコンテナの親ではない。コンテナごとに conmon という小さなプロセスを起動し、conmon が OCI ランタイムを fork して親になる。Podman は conmon が double fork を終えるのを待つだけで終了できる。終了の通知はファイルシステム (exit file) と「後始末コマンドを新しい Podman プロセスとして起動する」ことで行い、状態の真実は exit file の有無と conmon の pid が生きているかだけ。"
-group: "デーモンレス"
+group: "コンテナを作って動かす"
 sidebar:
-  order: 1
+  order: 17
 ---
 
 ## 何を学んだか
@@ -11,6 +11,8 @@ sidebar:
 ### どんな状況の話か
 
 Docker には `dockerd` という常駐デーモンがいて、コンテナプロセスの親としてそれを監視し、終了コードを受け取り、ログを書き、後始末をする。Podman はこのデーモンを持たない。`podman run -d nginx` を実行したプロセスは、コンテナを起動したら終了する。では、コンテナが終わったことを誰が知り、誰が後始末をするのか。
+
+このページは、[「ランタイム」が指す 3 つの層](../runtime-layers/) でいう **shim の層** を扱う。conmon が起動されるまでの経路は [`podman run` の全経路](../podman-run-walkthrough/) を、conmon が書くログの形式は [標準入出力・attach・ログ](../container-io/) を参照。
 
 ### Podman の答え
 
