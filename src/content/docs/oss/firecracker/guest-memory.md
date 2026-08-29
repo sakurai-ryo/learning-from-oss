@@ -77,25 +77,43 @@ impl From<&GuestMemorySlot<'_>> for kvm_userspace_memory_region {
 
 ここで [VT-x のページ](../hardware-virtualization/)で見た EPT がつながる。
 
-```
-  ゲストの中
-  --------------------------------------------------------------
-   GVA (ゲスト仮想アドレス)
-     |  ゲストのページテーブル (ゲスト OS が管理)
-     v
-   GPA (ゲスト物理アドレス)     <-- ゲストは「これが物理」だと思っている
-  --------------------------------------------------------------
-  ホストの中
-   GPA
-     |  メモリスロット (Firecracker が KVM_SET_USER_MEMORY_REGION で登録)
-     v
-   HVA (ホスト仮想アドレス)     <-- Firecracker プロセスの mmap 領域の中
-     |  ホストのページテーブル (ホストカーネルが管理)
-     v
-   HPA (ホスト物理アドレス)     <-- 本物の DRAM
+```mermaid
+flowchart TB
+    subgraph guest["ゲストの中"]
+        direction TB
+        GVA["GVA ゲスト仮想アドレス"]
+        GPA["GPA ゲスト物理アドレス<br/>ゲストは「これが物理」だと思っている"]
+        GVA -- "ゲストのページテーブル<br/>ゲスト OS が管理" --> GPA
+    end
+    subgraph host["ホストの中"]
+        direction TB
+        HVA["HVA ホスト仮想アドレス<br/>Firecracker プロセスの mmap 領域の中"]
+        HPA["HPA ホスト物理アドレス<br/>本物の DRAM"]
+        HVA -- "ホストのページテーブル<br/>ホストカーネルが管理" --> HPA
+    end
+    GPA -- "メモリスロット<br/>KVM_SET_USER_MEMORY_REGION で登録" --> HVA
+    GPA -. "KVM がこの 2 段を合成して<br/>GPA → HPA の EPT を 1 枚作る" .-> HPA
 ```
 
 住所は 3 段ある。ところが EPT は GPA → HPA の 1 段だ。この差はどこで埋まるのか。**KVM が GPA → HVA → HPA を合成して、GPA → HPA という 1 枚の EPT を作る。** ゲストが未マップの GPA に触ると EPT violation で VM exit し、KVM はそのハンドラでメモリスロットの表を引いて HVA を求め、ホスト側のページフォルトを起こして HPA を確定させ、EPT にエントリを埋めてからゲストに戻す。以後、同じページへのアクセスは EPT だけで解決するので exit しない。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as ゲスト
+    participant CPU as CPU (EPT)
+    participant KVM as KVM
+    participant MM as ホストのメモリ管理
+
+    G->>CPU: GPA 0x1000 にアクセス
+    Note over CPU: EPT を引く → エントリなし
+    CPU->>KVM: VM exit (EPT violation)
+    KVM->>KVM: メモリスロットの表を引いて GPA → HVA
+    KVM->>MM: HVA でページフォルトを起こす
+    MM-->>KVM: 物理ページを割り当て → HPA 確定
+    KVM->>CPU: EPT に GPA → HPA を書いて VM entry
+    Note over G,CPU: 以後、同じページへのアクセスは<br/>EPT だけで解決するので exit しない
+```
 
 つまり **メモリスロットは EPT を組み立てるための材料** で、Firecracker が「ここからここまではメモリだ」と宣言し、KVM が実際のページテーブルを構築する。前ページで見た「KVM が CPU とメモリの仮想化を担当する」という線引きそのままだ。
 

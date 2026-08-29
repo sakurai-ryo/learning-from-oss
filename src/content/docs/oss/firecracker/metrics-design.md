@@ -34,6 +34,28 @@ previous.store(snapshot)      ← 成功したときだけ
 
 この配置には副次的な性質がある。書き込みに失敗（パイプが詰まったなど）したら `previous` を更新しない。次の flush で「前回失敗した分を含む差分」が出る。**flush が数回スキップされてもカウントは失われない。** モジュール冒頭のコメントがこの 2 点をそのまま利点として挙げている。
 
+```mermaid
+flowchart LR
+    subgraph w["加算側 — デバイスのホットパス"]
+        I["inc() = current.fetch_add(1, Relaxed)<br/>x86 なら lock xadd 1 命令"]
+    end
+    subgraph f["flush 側 — 60 秒に 1 回、1 スレッドだけ"]
+        direction TB
+        S1["snapshot = current.load()"]
+        S2["出力 = snapshot - previous.load()"]
+        S3["書き込みに成功したときだけ previous.store(snapshot)"]
+        S1 --> S2 --> S3
+    end
+    C[("current<br/>誰もリセットしない。単調増加しつづける")]
+    P[("previous<br/>flush スレッドだけが触る")]
+    I --> C
+    C --> S1
+    S3 --> P
+    P --> S2
+    N["加算側と flush 側が同じワードを奪い合わない<br/>書き込みに失敗したら previous を進めないので、<br/>flush が数回スキップされてもカウントは失われない"]
+    N -.-> S3
+```
+
 ### 2 種類しかない
 
 | 型                  | 保持            | シリアライズ                     | 使うもの                                                                            |
@@ -57,16 +79,19 @@ pub static METRICS: Metrics<FirecrackerMetrics, FcLineWriter> = ...;
 
 ### flush の経路は 3 つ
 
-```
-  ① タイマー (60 秒周期)      PeriodicMetrics (VMM スレッドの epoll)
-  ② PUT /actions FlushMetrics API 経由で明示的に
-  ③ 異常終了                  シグナルハンドラ / パニックフック
-       │
-       └──> METRICS.write()
-              ├─ metrics_buf (OnceLock<Mutex<LineWriter<File>>>) をロック
-              ├─ serde_json::to_writer(&FirecrackerMetrics)
-              │    └─ このシリアライズの副作用として SharedIncMetric がリセットされる
-              └─ 改行 1 つ
+```mermaid
+flowchart TB
+    A["① タイマー — 60 秒周期<br/>PeriodicMetrics が VMM スレッドの epoll に載る"] --> W
+    B["② PUT /actions FlushMetrics<br/>API 経由で明示的に"] --> W
+    C["③ 異常終了<br/>シグナルハンドラ / パニックフック"] --> W
+    W["METRICS.write()"]
+    W --> W1["metrics_buf (OnceLock の Mutex) をロック"]
+    W1 --> W2["serde_json::to_writer で FirecrackerMetrics を書く<br/>このシリアライズの副作用として SharedIncMetric がリセットされる"]
+    W2 --> W3["改行を 1 つ"]
+    N["シリアライズ自体が破壊的操作<br/>デバッグのつもりで to_string を呼ぶとカウンタが消える"]
+    N -.-> W2
+    M["③ はどのスレッドで走るか分からない<br/>= 致命シグナルのメトリクスだけ SharedStoreMetric にして<br/>そこだけレースを潰している"]
+    M -.-> C
 ```
 
 **シリアライズ自体が破壊的操作である**ことに注意が要る。`Serialize for SharedIncMetric` のドキュメントコメントは `!!! Any print of the metrics will also reset them. Use with caution !!!` と書いている。デバッグのつもりで `serde_json::to_string(&METRICS)` を呼ぶと、そこでカウンタがリセットされる。

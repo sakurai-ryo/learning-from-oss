@@ -28,15 +28,12 @@ Firecracker のドキュメントはこれを、「強い仕組みなしに同�
 2. そこに暗号論的に安全な乱数を書き、ACPI テーブルでその物理アドレスをゲストに教える。
 3. **復元のたびに新しい値を書き直し、割り込みを注入する。**
 
-```
-  保存時のゲストメモリ           復元後のゲストメモリ
-  ┌──────────────────┐         ┌──────────────────┐
-  │ gen_id = 0x1a2b… │   ───▶  │ gen_id = 0x9f04… │  ← 新しい 128bit
-  └──────────────────┘         └──────────────────┘
-                                        │
-                                    IRQ 注入（vCPU 再開より前）
-                                        ▼
-                          Linux 5.18+ : CSPRNG を強制再シード
+```mermaid
+flowchart LR
+    A["保存時のゲストメモリ<br/>gen_id = 0x1a2b…"] -- "復元" --> B["復元後のゲストメモリ<br/>gen_id = 0x9f04…<br/>= 新しい 128bit"]
+    B -- "IRQ 注入 — vCPU 再開より前" --> C["Linux 5.18 以降<br/>値をエントロピーとして混ぜたうえで<br/>CSPRNG の再シードを強制する"]
+    N["値そのものは秘密ではない<br/>ゲストのカーネルは「変わったかどうか」だけを見る<br/>エントロピー量としてはカウントしない (don't credit)"]
+    N -.-> B
 ```
 
 値そのものは秘密ではない。ゲストのカーネルは「変わったかどうか」だけを見る。Linux 5.18 以降（ACPI システム）は VMGenID の変化を検出すると、その値をエントロピーとして混ぜたうえで **即座に再シードを強制する**。カーネルのコメントを random-for-clones.md が引用している。
@@ -153,6 +150,20 @@ pub struct VMGenIDState {
 [`src/vmm/src/builder.rs#L497-L500`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/builder.rs#L497-L500)
 
 その後に `start_vcpus` が呼ばれ、vCPU は Paused 状態のスレッドとして起動する（[`src/vmm/src/builder.rs#L522-L529`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/builder.rs#L522-L529)）。つまり割り込みの注入は確実に vCPU 再開より前になる。
+
+```mermaid
+flowchart TB
+    A["build_microvm_from_snapshot()"] --> B["KVM 状態を復元<br/>vCPU の LAPIC 状態や irqchip 状態を上書きする"]
+    B --> C["デバイスを復元<br/>replay_gsi_allocations → activate_vmgenid → do_post_restore_vmgenid"]
+    C --> D["新しい gen_id をゲストメモリに書き、割り込みを注入する"]
+    D --> E["start_vcpus() — vCPU は Paused のまま起動する"]
+    E --> F["resume_vm() — vCPU が動き出す"]
+    F --> G["ゲストカーネルが割り込みを処理し、CSPRNG を再シードする"]
+    N1["順序が逆だと、KVM 状態の復元が<br/>注入した割り込みを上書きしてしまう"]
+    N1 -.-> C
+    N2["レース窓 — F と G の間に走るコードが乱数を引くと<br/>古い状態の値を得る<br/>潰したいなら RNDRESEEDCRNG を明示的に呼ぶ"]
+    N2 -.-> G
+```
 
 比較のため virtio-rng 側。こちらはゲストがキューに空バッファを積んだときに初めて `handle_one` が走り、同じ `aws_lc_rs::rand::fill` でバイト列を作って書き戻す（[`src/vmm/src/devices/virtio/rng/device.rs#L118-L137`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/virtio/rng/device.rs#L118-L137)）。同じ乱数源を使っていても、駆動する側がホストかゲストかで役割が変わる。
 

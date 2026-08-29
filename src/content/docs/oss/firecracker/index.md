@@ -20,6 +20,52 @@ Firecracker は、AWS が Lambda と Fargate のために書いた VMM (Virtual 
 
 もう 1 つは、**Firecracker 固有の設計を読むこと**。VMM の実装は QEMU をはじめいくつもあるが、これほど機能を削ることに執着したものは他にない。その削り方と、削らずに自分で書いた部分の対比が、残り 55 ページの中身になる。
 
+## 30 秒で見る Firecracker
+
+細かい話に入る前に、動いているところの形だけ見ておく。1 プロセスがちょうど 1 台の microVM を抱え、その中に 3 種類のスレッドしかいない。
+
+```mermaid
+flowchart TB
+    O(["オーケストレータ"]) -- "HTTP over Unix ドメインソケット" --> API
+    subgraph P["firecracker プロセス = microVM ちょうど 1 台"]
+        direction TB
+        API["API スレッド<br/>設定を受けるだけ。fast path には乗らない"]
+        VMM["VMM スレッド<br/>epoll ループ / virtio デバイス / MMDS"]
+        VC["vCPU スレッド × N<br/>KVM_RUN のループ"]
+        API -- "mpsc + eventfd" --> VMM
+        VMM -- "mpsc + シグナル" --> VC
+    end
+    VC -- "ioctl(KVM_RUN)" --> KVM["/dev/kvm"]
+    KVM -- "VM exit — MMIO / PIO" --> VC
+    VMM -- "irqfd に write すると割り込みが入る" --> KVM
+    VMM --> TAP["TAP デバイス / ディスクのバッキングファイル"]
+    KVM --> G["ゲスト Linux<br/>起動した瞬間から悪意あるコードとみなす"]
+```
+
+そして起動は、実機が数十秒かけてやることのほとんどを飛ばす。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as オーケストレータ
+    participant F as Firecracker
+    participant K as KVM
+    participant G as ゲスト
+
+    O->>F: PUT /boot-source, /drives, /machine-config
+    Note over F: VmResources に溜まるだけ。KVM はまだ触らない
+    O->>F: PUT /actions — InstanceStart
+    F->>K: KVM_CREATE_VM → irqchip → KVM_CREATE_VCPU
+    F->>K: KVM_SET_USER_MEMORY_REGION<br/>ゲスト物理メモリ = ホストプロセスの匿名 mmap
+    F->>F: カーネルを非圧縮のままメモリへ memcpy<br/>BIOS もブートローダも PCI の列挙も通さない
+    F->>F: zero page / ページテーブル / GDT を書き、レジスタを直接設定する
+    F->>K: ioctl(KVM_RUN)
+    K->>G: ゲストがネイティブに走り出す
+    Note over F,G: InstanceStart からここまで 125 ms 以下<br/>VMM 側のメモリオーバーヘッドは 5 MiB 以下
+```
+
+この 2 枚の細部を詰めていくのが、この章の内容になる。
+
 ## この OSS について
 
 - Apache 2.0。Rust で約 12 万行、うち `src/vmm` が 10.2 万行。残りは `jailer`、`seccompiler`、`snapshot-editor` といった周辺ツール。

@@ -19,16 +19,15 @@ Firecracker がゲストカーネルを読み込むとき、選択肢は 2 軸�
 
 ELF としてロードできたら、次に「PVH で入れるか」を見る。linux-loader クレートの ELF ローダーは ELF Note セクションに `XEN_ELFNOTE_PHYS32_ENTRY` があるかを調べ、あれば `PvhBootCapability::PvhEntryPresent(addr)` を返す。
 
-```
-kernel_file
-   │
-   ├─ ElfLoader::load 成功
-   │     ├─ PvhEntryPresent(addr) → BootProtocol::PvhBoot,   entry = addr
-   │     └─ なし                   → BootProtocol::LinuxBoot, entry = kernel_load
-   │
-   └─ InvalidElfMagicNumber
-         └─ BzImageLoader::load → BootProtocol::LinuxBoot, entry = kernel_load + 0x200
-                                  （setup_header を持ち帰って zero page の種にする）
+```mermaid
+flowchart TB
+    K["kernel_file"] --> E{"ElfLoader::load"}
+    E -- "成功" --> P{"ELF Note に<br/>XEN_ELFNOTE_PHYS32_ENTRY があるか"}
+    P -- "ある" --> PV["BootProtocol::PvhBoot<br/>entry = その ELF Note のアドレス"]
+    P -- "ない" --> LB["BootProtocol::LinuxBoot<br/>entry = kernel_load"]
+    E -- "InvalidElfMagicNumber" --> BZ["BzImageLoader::load"]
+    E -- "それ以外のエラー" --> ERR["そのまま失敗させる<br/>ELF ではあるが壊れている等"]
+    BZ --> BL["BootProtocol::LinuxBoot<br/>entry = kernel_load + 0x200<br/>setup_header を持ち帰って zero page の種にする"]
 ```
 
 bzImage の場合だけ `setup_header` が `Some` になり、後段の `configure_64bit_boot` がそれを zero page の種として使う。ELF の場合は `None` なので、ゼロ埋めのヘッダから組み立てる。
@@ -49,6 +48,26 @@ PVH（Xen の "PVH direct boot" ABI）は、「ハイパーバイザがカーネ
 | initrd         | `hdr.ramdisk_image` / `ramdisk_size`                       | `hvm_modlist_entry` の配列を 0x6040 に置く                |
 
 `MEMMAP_START` と `ZERO_PAGE_START` はどちらも 0x7000 である。どちらか一方しか使われないことが、レイアウト定数のレベルで前提になっている。
+
+```mermaid
+flowchart LR
+    subgraph lb["LinuxBoot — VMM が用意する初期状態"]
+        direction TB
+        L1["ロングモード<br/>CR0.PE + EFER.LME + EFER.LMA"]
+        L2["ページテーブルを書く<br/>PML4 / PDPTE / PDE — 2MB ページ 512 エントリ"]
+        L3["GDT は 64 ビットコードセグメント (0xa09b)"]
+        L4["zero page (boot_params) を 0x7000 に置き、rsi に入れる"]
+        L5["rsp / rbp = 0x8ff0"]
+    end
+    subgraph pv["PvhBoot — VMM が用意する初期状態"]
+        direction TB
+        P1["32 ビット保護モード<br/>CR0 = PE + ET、CR4 = 0"]
+        P2["ページテーブルは書かない<br/>ページングはカーネルが自分で有効化する"]
+        P3["GDT は 4GB フラットな 32 ビットセグメント (0xc09b / 0xc093)"]
+        P4["hvm_start_info を 0x6000 に置き、rbx に入れる<br/>memmap 配列は 0x7000、modlist は 0x6040"]
+        P5["rsp / rbp は設定すらしない"]
+    end
+```
 
 起動時間に効くのは主に 2 点。
 

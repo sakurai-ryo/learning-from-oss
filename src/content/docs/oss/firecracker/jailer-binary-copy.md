@@ -32,6 +32,25 @@ jailer は `--exec-file` で渡された Firecracker バイナリを `<chroot_di
 
 どちらも Firecracker 自身では防げないハードウェア寄りの問題である。だから「防ぐ」のではなく「前提条件を作らない」。プロセスごとに別の inode を持たせれば、`.text` の物理ページは共有されない。
 
+```mermaid
+flowchart LR
+    subgraph hl["ハードリンク — 採らない"]
+        direction TB
+        H1["プロセス A"] --> HI["同じ inode"]
+        H2["プロセス B"] --> HI
+        HI --> HP[".text の物理ページを共有する"]
+        HP --> HR["Flush+Reload の前提条件がそろう<br/>Rowhammer で狙う物理ページも共有される"]
+    end
+    subgraph cp["コピー — 採用"]
+        direction TB
+        C1["プロセス A"] --> CI1["inode A"]
+        C2["プロセス B"] --> CI2["inode B"]
+        CI1 --> CP1[".text の物理ページは別"]
+        CI2 --> CP1
+        CP1 --> CR["攻撃の前提条件そのものを作らない<br/>代償はディスク容量"]
+    end
+```
+
 `docs/jailer.md` の手順説明も同じことを書いている。「`--exec-file` で指定されたファイルを `<chroot_dir>/<exec_file_name>` にコピーする。これにより、新しいプロセスが他のどの Firecracker プロセスともメモリを共有しないことが保証される」。
 
 ### コピー処理そのものにも防御が入っている
@@ -57,13 +76,16 @@ jailer は `--exec-file` で渡された Firecracker バイナリを `<chroot_di
 
 ### コピー全体の流れ
 
-```
-1. src = open(exec_file_path, O_RDONLY)
-2. mode = src.metadata().mode()             元の実行ビットを引き継ぐ
-3. dst = open(chroot_dir/<name>, O_WRONLY|O_CREAT|O_NOFOLLOW, mode)
-4. dst.metadata().nlink() > 1 なら エラー
-5. fchown(dst, uid, gid)                    非特権ユーザに所有権を渡す
-6. io::copy(src, dst)
+```mermaid
+flowchart TB
+    S1["1. src = open(exec_file_path, O_RDONLY)"] --> S2["2. mode = src.metadata().mode()<br/>元の実行ビットを引き継ぐ"]
+    S2 --> S3["3. dst = open(chroot_dir の中の実行ファイル,<br/>O_WRONLY + O_CREAT + O_NOFOLLOW, mode)<br/>最終要素がシンボリックリンクなら ELOOP で失敗する"]
+    S3 --> S4{"4. dst.metadata().nlink() が 1 より大きいか"}
+    S4 -- "大きい" --> E["JailerError::HardLink で落とす<br/>先回りして作られたハードリンク越しに<br/>ホストの重要なファイルを上書きしないため"]
+    S4 -- "1 である" --> S5["5. fchown(dst, uid, gid) — 非特権ユーザに所有権を渡す"]
+    S5 --> S6["6. io::copy(src, dst)"]
+    N["4 と 5 はパスではなく、開いた fd に対して行う<br/>= パスと inode の対応が入れ替わる TOCTOU を避けられる"]
+    N -.-> S4
 ```
 
 ## ソースコードのどこか

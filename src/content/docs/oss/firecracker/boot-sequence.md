@@ -16,47 +16,38 @@ microVM が起動するまでの処理は、`src/vmm/src/builder.rs` の `build_
 
 ### 全体の流れ
 
-```
- API スレッド                    VMM スレッド                     vCPU スレッド
-     │                              │
- PUT /boot-source                   │
- PUT /drives/rootfs                 │   VmResources に溜まるだけ
- PUT /machine-config                │   （KVM は一切触らない）
-     │                              │
- PUT /actions {InstanceStart} ──────▶
-                                    │  request_ts を取る（起動時間の計測開始）
-                                    │
-                                    │  ① allocate_guest_memory()   ホスト側で mmap
-                                    │  ② Kvm::new()                /dev/kvm を開く
-                                    │  ③ KvmVm::new(kvm)           KVM_CREATE_VM
-                                    │  ④ create_vcpus(n)
-                                    │       └ arch_pre_create_vcpus()
-                                    │            KVM_CREATE_IRQCHIP / KVM_CREATE_PIT2
-                                    │       └ KVM_CREATE_VCPU × n
-                                    │  ⑤ register_dram_memory_regions()
-                                    │            KVM_SET_USER_MEMORY_REGION × 領域数
-                                    │  ⑥ DeviceManager::new()
-                                    │  ⑦ load_kernel()   ELF or bzImage をゲスト物理メモリへ
-                                    │  ⑧ initrd をロード
-                                    │  ⑨ デバイスの attach
-                                    │       boot timer → balloon → block → net → pmem
-                                    │       → vsock → entropy → virtio-mem → VMGenID
-                                    │       → vmclock（cmdline に virtio_mmio.device= が積まれる）
-                                    │  ⑩ configure_system_for_boot()
-                                    │       CPUID → MSR → boot state
-                                    │       cmdline / MPTable / zero page or PVH / ACPI
-                                    │  ⑪ Vmm を組み立てて Arc<Mutex<>> へ
-                                    │  ⑫ start_vcpus() ────────────────────▶ spawn
-                                    │                                       seccomp 適用
-                                    │       ◀───── barrier.wait() ────────── barrier
-                                    │                                       Paused で待機
-                                    │  ⑬ instance_info.state = Paused
-                                    │  ⑭ event_manager.add_subscriber(vmm)
-                                    │
-                                    │  ⑮ resume_vm() ─────────────────────▶ KVM_RUN 開始
-                                    │  ⑯ seccomp("vmm") を適用                   │
-                                    │  ⑰ event_manager.run() のループへ           ▼
-                                    │                                    ゲストが動く
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as API スレッド
+    participant V as VMM スレッド
+    participant C as vCPU スレッド
+
+    A->>A: PUT /boot-source, /drives/rootfs, /machine-config
+    Note over A: VmResources に溜まるだけ<br/>KVM は一切触らない
+    A->>V: PUT /actions (InstanceStart)
+    Note over V: request_ts を取る = 起動時間の計測開始
+    V->>V: ① allocate_guest_memory() ホスト側で mmap
+    V->>V: ② Kvm::new() で /dev/kvm を開く
+    V->>V: ③ KvmVm::new(kvm) = KVM_CREATE_VM
+    V->>V: ④ create_vcpus(n)<br/>先に KVM_CREATE_IRQCHIP / KVM_CREATE_PIT2<br/>その後 KVM_CREATE_VCPU を n 回
+    V->>V: ⑤ register_dram_memory_regions()<br/>KVM_SET_USER_MEMORY_REGION を領域数だけ
+    V->>V: ⑥ DeviceManager::new()
+    V->>V: ⑦ load_kernel() ELF か bzImage をゲスト物理メモリへ
+    V->>V: ⑧ initrd をロード
+    V->>V: ⑨ デバイスの attach<br/>boot timer → balloon → block → net → pmem<br/>→ vsock → entropy → virtio-mem → VMGenID → vmclock<br/>cmdline に virtio_mmio.device= が積まれる
+    V->>V: ⑩ configure_system_for_boot()<br/>CPUID → MSR → boot state<br/>cmdline / MPTable / zero page か PVH / ACPI
+    V->>V: ⑪ Vmm を組み立てて Arc + Mutex に包む
+    V->>C: ⑫ start_vcpus() でスレッドを spawn
+    C->>C: seccomp の vcpu フィルタを適用
+    C-->>V: barrier.wait() で初期化完了を通知
+    Note over C: Paused で待機。まだ 1 命令も実行していない
+    V->>V: ⑬ instance_info.state = Paused
+    V->>V: ⑭ event_manager.add_subscriber(vmm)
+    V->>C: ⑮ resume_vm()
+    C->>C: KVM_RUN 開始 → ゲストが動き出す
+    V->>V: ⑯ seccomp の vmm フィルタを適用
+    V->>V: ⑰ event_manager.run() のループへ
 ```
 
 ### 順序に理由がある箇所
@@ -66,6 +57,17 @@ microVM が起動するまでの処理は、`src/vmm/src/builder.rs` の `build_
 - **デバイスの attach は `configure_system_for_boot` より前**。MMIO トランスポートの virtio デバイスは `virtio_mmio.device=<size>@<baseaddr>:<irq>` という文字列でゲストに教える必要があり、これは attach 時に `boot_cmdline` へ積まれる。加えて `create_acpi_tables` が `device_manager` を受け取ってデバイス情報を ACPI テーブルに書き出す
 - **boot timer は最初にアタッチする**。MMIO アドレスがアタッチ順で決まるので、ドキュメントとテストが参照するアドレスを固定するにはこの位置しかない
 - **CPUID の設定は MSR の取得より前**。KVM は CPUID から「このゲストがどの MSR をサポートするか」を判断するので、CPUID を入れる前に `KVM_GET_MSRS` すると値が 0 で返る（[CPUID を先に、MSR を後に](../cpuid-before-msr/)）
+
+依存関係だけを取り出すとこうなる。矢印の向きが「先に済ませておかないといけない」を表す。
+
+```mermaid
+flowchart LR
+    IRQ["KVM_CREATE_IRQCHIP"] -- "後に呼ぶと失敗する" --> VCPU["KVM_CREATE_VCPU"]
+    MEM["メモリ登録<br/>KVM_SET_USER_MEMORY_REGION"] -- "書き込み先が要る" --> KERNEL["load_kernel"]
+    BT["boot timer の attach"] -- "MMIO アドレスが attach 順で決まる" --> ATT["残りのデバイスの attach"]
+    ATT -- "virtio_mmio.device= を cmdline に積む<br/>ACPI テーブルの材料にもなる" --> CONF["configure_system_for_boot"]
+    CPUID["KVM_SET_CPUID2"] -- "先に入れないと KVM_GET_MSRS が 0 を返す" --> MSR["MSR の取得"]
+```
 
 ### vCPU は Paused で起動する
 

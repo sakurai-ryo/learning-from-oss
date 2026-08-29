@@ -157,21 +157,44 @@ sidebar:
 
 両方の関数に `fence(Ordering::SeqCst)` があり、どちらも「ストアしてからロードする」形になっている。
 
-```
-  prepare_kick:
-      used.ring[] と used.idx をストア  (advance_used_ring_idx の Release fence まで)
-              ↓  ← ここに SeqCst
-      used_event をロード
-
-  try_enable_notification:
-      avail_event をストア
-              ↓  ← ここに SeqCst
-      avail.idx をロード
+```mermaid
+flowchart TB
+    subgraph pk["prepare_kick"]
+        direction TB
+        A1["used.ring[] と used.idx をストア<br/>(advance_used_ring_idx の Release fence まで)"]
+        A2["fence(Ordering::SeqCst)"]
+        A3["used_event をロード"]
+        A1 --> A2 --> A3
+    end
+    subgraph te["try_enable_notification"]
+        direction TB
+        B1["avail_event をストア"]
+        B2["fence(Ordering::SeqCst)"]
+        B3["avail.idx をロード"]
+        B1 --> B2 --> B3
+    end
+    N["どちらも「ストア → ロード」の形<br/>Release も Acquire もこの順序は保証しない<br/>CPU のストアバッファが後続のロードを先に完了させうる"]
+    N -.-> A2
+    N -.-> B2
 ```
 
 **Release / Acquire フェンスでは足りない。** Release は「これより前のストアが、これより後のストアより先に見える」ことを保証する。Acquire は「これより後のロードが、これより前のロードより後に行われる」を保証する。どちらも**ストア → ロードの順序は保証しない**。x86 を含む多くの CPU はストアバッファを持っていて、自分のストアがまだキャッシュに出ていないうちに後続のロードを完了させる。
 
 これが致命的なのは、ドライバ側が対称に同じことをやるからだ。デバイスが「`used_event` を読む → 通知不要と判断」、ドライバが「`used.idx` を読む → まだ完了なしと判断して寝る」の両方が、互いのストアを見ないまま成立してしまう。**両者が相手を待って永久に止まる。** 相互排除の Dekker アルゴリズムがフルバリアを要求するのと同じ構造で、片方だけが SeqCst でも足りない。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant V as デバイス (Firecracker)
+    participant D as ドライバ (ゲスト)
+
+    Note over V,D: SeqCst がないと、互いのストアを見ないまま両方が成立する
+    V->>V: used.idx を進める — ストアバッファに残ったまま
+    D->>D: used_event を書く — ストアバッファに残ったまま
+    V->>V: used_event をロード → 古い値 → 「通知不要」と判断
+    D->>D: used.idx をロード → 古い値 → 「まだ完了なし」と判断して寝る
+    Note over V,D: デバイスは通知せず、ドライバは待ち続ける = ハング
+```
 
 `try_enable_notification` 側も同じで、「デバイスが avail_event を書く前に avail.idx を読む」と「ドライバが descriptor を積んでから avail_event を読む」が交差すると、kick が飛ばず、デバイスは epoll で寝たままになる。
 

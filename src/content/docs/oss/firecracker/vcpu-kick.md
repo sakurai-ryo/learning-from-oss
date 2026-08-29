@@ -14,21 +14,23 @@ vCPU スレッドは [`KVM_RUN` のループ](../kvm-run-loop/)を回ってい�
 
 Firecracker の `VcpuHandle::send_event()` は 3 段階でこれをやる。
 
-```
-VMM スレッド                              vCPU スレッド
-────────────                             ─────────────
-(1) event_sender.send(Pause)  ──────>    [mpsc キューに積まれる]
+```mermaid
+sequenceDiagram
+    autonumber
+    participant V as VMM スレッド
+    participant Q as mpsc キュー
+    participant KR as kvm_run<br/>(mmap で共有)
+    participant C as vCPU スレッド
 
-(2) set_kvm_immediate_exit(1) ──────>    [kvm_run.immediate_exit = 1]
-      (mmap で共有された kvm_run 構造体を直接書く)
-
-(3) fence(Release)
-
-(4) pthread_kill(SIGRTMIN)    ──────>    シグナルハンドラ (何もしない)
-                                           └─> KVM_RUN が EINTR で返る
-                                         run_emulation() が Interrupted を返す
-                                         running() が event_receiver.try_recv()
-                                           └─> Pause を受け取る
+    V->>Q: (1) event_sender.send(Pause)
+    V->>KR: (2) set_kvm_immediate_exit(1)
+    Note over V: (3) fence(Release)
+    V->>C: (4) pthread_kill(SIGRTMIN)
+    Note over C: シグナルハンドラは fence(Acquire) 1 行だけ<br/>配送すること自体が目的
+    C->>C: KVM_RUN が EINTR で返る
+    C->>C: run_emulation() が Interrupted を返す<br/>immediate_exit は 0 に戻す
+    C->>Q: running() が event_receiver.try_recv()
+    Q-->>C: Pause を受け取る
 ```
 
 **3 つとも要る。** どれか 1 つでは、必ず取りこぼしのケースが残る。
@@ -153,6 +155,28 @@ vCPU スレッドは 3 状態を持つ。`run()`（[`src/vmm/src/vstate/vcpu.rs#
 ```
 
 **起動直後は `Paused` である。** スレッドは立ち上がるがゲストは走らない。[API で `InstanceStart`](../api-state-machine/) が来て初めて `Resume` が送られる。`Paused` 状態では `recv()`（ブロックする）を使う。`KVM_RUN` の中に居ないので、普通にチャネルを待てばよい。`Pause` 中に `SaveState` を受けると[状態を保存](../save-ordering/)して返し、`Running` 中に受けたら `NotAllowed` を返す。**「走っている vCPU の状態は保存できない」という制約が、状態機械のどの分岐に居るかで表現されている。**
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Paused: スレッド起動直後は必ずここ
+    Paused --> Running: Resume を受け取る<br/>(API の InstanceStart)
+    Running --> Paused: Pause を受け取る
+    Running --> Finished: Finish を受け取る
+    Paused --> Finished: Finish を受け取る
+    Finished --> [*]
+
+    note left of Paused
+        KVM_RUN の中に居ないので
+        recv() でブロックしてよい
+        SaveState を受け付けるのはここだけ
+    end note
+    note right of Running
+        KVM_RUN のループの中
+        チャネルを見るのは Interrupted のときだけ
+        SaveState には NotAllowed を返す
+    end note
+```
 
 `paused()` には `immediate_exit` の後始末がもう 1 箇所ある（[`src/vmm/src/vstate/vcpu.rs#L321-L328`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/vstate/vcpu.rs#L321-L328)）。`Resume` の `send_event()` 自体がフラグを立てるので、`Paused` 状態で `Resume` を受け取ると**フラグが立ったまま `Running` に入りかねない**。ここで `warn!` を出して 0 に戻しておかないと、再開直後に `KVM_RUN` が空振りする。
 

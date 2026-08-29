@@ -25,29 +25,24 @@ ioctl(vcpu_fd, KVM_RUN, 0);
 
 つまり `KVM_RUN` から抜けてくるのは、**ゲストが「ユーザースペースの助けが必要なこと」をしたとき**だけだ。VM exit のうちごく一部しかここまで上がってこない。
 
-```
-  VMM スレッド          vCPU スレッド                      物理 CPU
-                        │
-                        │ ioctl(vcpu_fd, KVM_RUN)
-                        ├──────────────────────────────────▶ VMX non-root へ
-                        │                                     ゲストのコードを実行
-                        │                                     ...
-                        │                                     ゲストが未マップの
-                        │                                     アドレスに mov した
-                        │                                    ▼ VM exit
-                        │                                   KVM (カーネル内)
-                        │                                     ここで処理できる?
-                        │                                       できる → 再突入
-                        │                                       できない ↓
-                        │ ◀───────────────────────────────── ioctl が return
-                        │
-                        │ kvm_run.exit_reason を読む
-                        │ = KVM_EXIT_MMIO
-                        │ kvm_run.mmio.{phys_addr, data, len, is_write}
-                        │ を見てデバイスを演じる
-                        │
-                        │ ioctl(vcpu_fd, KVM_RUN)   ← 何事もなかったように再突入
-                        ├──────────────────────────────────▶
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as vCPU スレッド
+    participant K as KVM (カーネル内)
+    participant C as 物理 CPU
+
+    T->>K: ioctl(vcpu_fd, KVM_RUN)
+    K->>C: VMX non-root へ突入
+    Note over C: ゲストのコードをネイティブに実行
+    C->>K: VM exit (未マップのアドレスに mov した)
+    alt KVM がカーネル内で処理できる
+        K->>C: 再突入。ユーザースペースは何も知らない
+    else 処理できない
+        K-->>T: ioctl が return
+        Note over T: kvm_run.exit_reason = KVM_EXIT_MMIO<br/>phys_addr / data / len / is_write を見て<br/>デバイスを演じる
+        T->>K: ioctl(vcpu_fd, KVM_RUN)<br/>何事もなかったように再突入
+    end
 ```
 
 ## 戻ってきた理由の受け渡し場所は、mmap した構造体
@@ -118,6 +113,19 @@ struct kvm_run {
 3. 見つけたデバイスの `read` / `write` を、`phys_addr - デバイスの基底アドレス` をオフセットとして呼ぶ。
 4. 読みなら `kvm_run.mmio.data` に結果を書き込む。書きならデバイス側の状態を更新する。
 5. `KVM_RUN` に再突入する。ゲストから見ると `mov` が普通に完了したように見える。
+
+```mermaid
+flowchart TB
+    A["ゲストのドライバが、穴のアドレスに mov"] --> B["KVM は変換先を持っていない<br/>→ KVM_EXIT_MMIO で抜ける"]
+    B --> C["1. kvm_run.mmio.phys_addr を見る"]
+    C --> D["2. そのアドレスを含む範囲を登録している<br/>デバイスモデルを探す"]
+    D --> E["3. offset = phys_addr - デバイスの基底アドレス<br/>を渡して read / write を呼ぶ"]
+    E --> F{"読みか、書きか"}
+    F -- "読み" --> G["4a. kvm_run.mmio.data に結果を書く"]
+    F -- "書き" --> H["4b. デバイス側の状態を更新する"]
+    G --> I["5. KVM_RUN に再突入<br/>ゲストからは mov が普通に完了したように見える"]
+    H --> I
+```
 
 **「デバイスをエミュレートする」とは、要するにこの 5 ステップのことだ**。実在のハードウェアが持っているレジスタの意味を、ソフトウェアで演じる。ゲストのドライバは自分がエミュレートされたデバイスを触っていることを (少なくとも原理上は) 知らなくていい。
 
@@ -282,6 +290,22 @@ pub trait BusDevice: Send {
 ここまでの流れはすべて **vCPU スレッドの中で同期的に**起きている。MMIO exit を受けてデバイスの `write` を呼び、その中でホストの `write(2)` を呼び、返ってきてから `KVM_RUN` に戻る。その間、そのゲスト vCPU は止まっている。
 
 一方、ホスト側の I/O 完了 (TAP デバイスにパケットが来た、ブロックデバイスの読み出しが終わった) を待ち受けているのは VMM スレッドのイベントループだ。こちらは vCPU とは無関係に回っている。
+
+```mermaid
+flowchart LR
+    subgraph vt["vCPU スレッド"]
+        direction TB
+        L["KVM_RUN ループ"] --> M["MMIO exit を同期的に処理<br/>この間ゲストは止まっている"]
+        M --> L
+    end
+    subgraph mt["VMM スレッド"]
+        direction TB
+        E["epoll のイベントループ"] --> H["TAP にパケットが来た<br/>ブロック I/O が完了した"]
+        H --> E
+    end
+    mt -- "ゲストに何かを伝えたい<br/>→ 割り込み (irqfd)" --> vt
+    mt -- "vCPU を止めたい<br/>→ immediate_exit + シグナル" --> vt
+```
 
 2 つのスレッドが別々に走ることから、次の 2 つの問いが出てくる。
 

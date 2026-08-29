@@ -22,6 +22,16 @@ sidebar:
 
 流れは `デバイス → (割り込み線) → IOAPIC → (バス) → 対象コアの LAPIC → CPU コア` になる。
 
+```mermaid
+flowchart LR
+    D1["デバイス A"] -- "割り込み線" --> IO
+    D2["デバイス B"] -- "割り込み線" --> IO
+    IO["IOAPIC<br/>入力ピン 24 本<br/>ピンごとにベクタ番号と宛先 CPU を設定"]
+    P["PIC (8259A)<br/>入力 15 本、優先度と EOI"] -- "ExtINT" --> LA
+    IO -- "バス" --> LA["対象コアの LAPIC<br/>CPU コアごとに 1 個"]
+    LA --> CPU["CPU コア<br/>命令の切れ目でハンドラへ飛ぶ"]
+```
+
 ## ゲストの割り込みコントローラを誰がエミュレートするか
 
 素直に考えると、VMM が LAPIC も IOAPIC も PIC もソフトウェアで実装することになる。だがそれは非常に遅い。
@@ -61,6 +71,14 @@ struct kvm_irq_routing_entry {
 
 x86 では GSI 0〜23 が IOAPIC の 24 本のピンに対応する慣習で、それより上を MSI 用に使う。上限は `KVM_MAX_IRQ_ROUTES` で 4096 だ。
 
+```mermaid
+flowchart LR
+    V["VMM: 「GSI 7 を上げてくれ」"] --> G["GSI 番号空間<br/>0 〜 4095 の 1 つの整数空間"]
+    G --> R{"GSI ルーティングテーブル<br/>KVM_SET_GSI_ROUTING で毎回全置換"}
+    R -- "type = IRQCHIP" --> IC["irqchip + pin<br/>= どのチップの何番ピンか"]
+    R -- "type = MSI" --> MS["address_lo / address_hi / data<br/>= LAPIC 宛のメモリ書き込み"]
+```
+
 ## irqfd — ioctl を経由せずに割り込みを上げる
 
 GSI が決まっても、「今それを上げる」操作が要る。素直には `KVM_IRQ_LINE` ioctl だが、これだと割り込みのたびにシステムコールが要る。しかも割り込みを上げたいのは、多くの場合デバイスを処理しているワーカースレッドの中だ。
@@ -80,12 +98,18 @@ ioctl(vm_fd, KVM_IRQFD, &irqfd);   /* この eventfd と この GSI を結びつ
 
 逆向きの **ioeventfd** (`KVM_IOEVENTFD`) もある。こちらは「ゲストがこの物理アドレスに書いたら、この eventfd を signal する」という登録で、`KVM_EXIT_MMIO` でユーザースペースに戻る代わりにカーネル内で eventfd を叩いて `KVM_RUN` を続行させる。virtio の「kick」で使われる。
 
-```
-  [ホスト → ゲスト]  デバイスのワーカー ── write() ──▶ eventfd ──▶ KVM ──▶ LAPIC ──▶ vCPU
-                                                        (irqfd)
-
-  [ゲスト → ホスト]  vCPU ── MMIO write ──▶ KVM ──▶ eventfd ──▶ epoll で待つ VMM スレッド
-                                          (ioeventfd)  KVM_RUN は抜けない
+```mermaid
+flowchart LR
+    subgraph h2g["ホスト → ゲスト : irqfd"]
+        direction LR
+        W["デバイスのワーカー"] -- "write()" --> EF1["eventfd"]
+        EF1 --> K1["KVM"] --> LAPIC["LAPIC"] --> VC["vCPU"]
+    end
+    subgraph g2h["ゲスト → ホスト : ioeventfd"]
+        direction LR
+        VC2["vCPU"] -- "MMIO write" --> K2["KVM<br/>KVM_RUN は抜けない"]
+        K2 --> EF2["eventfd"] --> VMM["epoll で待つ VMM スレッド"]
+    end
 ```
 
 どちらも「exit を発生させずに、カーネル内で fd の通知に変換する」という同じ発想だ。

@@ -14,23 +14,21 @@ sidebar:
 
 vhost-user はそこを丸ごと外に出す。virtqueue を処理するのは Unix ドメインソケットの向こう側にいる別プロセス(バックエンド)で、Firecracker はフロントエンドとして必要な情報を渡すだけになる。Firecracker が実装しているのはフロントエンドのみで、バックエンドは利用者が用意する。
 
-```
-       [ゲスト]
-          |
-          | MMIO 書き込み(doorbell)
-          v
-  +----------------------------+          +---------------------------+
-  | Firecracker                |   UDS    | バックエンド (別プロセス)  |
-  |  vhost-user フロントエンド |<-------->|                           |
-  |   - UDS 接続               | 制御のみ |  virtqueue を直接読み書き |
-  |   - feature negotiation    |          |  ディスク I/O を実行      |
-  |   - config 要求の中継      |          |                           |
-  |   - メモリ fd / vring 情報 |          |                           |
-  +----------------------------+          +---------------------------+
-          |                                        ^        |
-          | guest memory の fd を送る               |        |
-          v                                        |        v
-       [ゲストメモリ (memfd, MAP_SHARED)] ---------+   [irqfd → KVM → ゲスト]
+```mermaid
+flowchart LR
+    G(["ゲスト"])
+    subgraph fc["Firecracker"]
+        FE["vhost-user フロントエンド<br/>1. UDS への接続<br/>2. feature negotiation<br/>3. config 要求の中継<br/>4. メモリ fd と vring 情報の共有"]
+    end
+    subgraph be["バックエンド — 別プロセス、利用者が用意する"]
+        BE["virtqueue を直接読み書きし<br/>ディスク I/O を実行する"]
+    end
+    MEM[("ゲストメモリ<br/>memfd + MAP_SHARED")]
+    FE -- "UDS は制御プレーンのみ<br/>データは 1 バイトも流れない" --> BE
+    FE -- "memfd の fd を SCM_RIGHTS で渡す" --> BE
+    BE -- "自分のアドレス空間にマップして読み書き" --> MEM
+    G -- "MMIO 書き込み = doorbell<br/>ioeventfd 経由で Firecracker を素通り" --> BE
+    BE -- "irqfd に write すると KVM が割り込みを注入" --> G
 ```
 
 `docs/api_requests/block-vhost-user.md` はフロントエンドの責務を 4 項目に列挙している。
@@ -171,6 +169,22 @@ activate の実体は `setup_backend` の 1 回の呼び出しである。
 - `set_vring_kick` — ゲストの doorbell が届く ioeventfd
 
 `set_vring_call` に渡しているのは KVM に登録済みの irqfd である。バックエンドがこの fd に書けば、Firecracker を経由せずに KVM がゲストへ割り込みを注入する。`set_vring_kick` に渡すのは MMIO 通知レジスタに紐付いた ioeventfd で、ゲストの doorbell はこれまた Firecracker を素通りしてバックエンドに届く。activate が終わった時点で、データパス上に Firecracker のコードは 1 行も残っていない。
+
+```mermaid
+flowchart TB
+    A["activate() → setup_backend() の 1 回で渡し切る"]
+    A --> B["set_mem_table<br/>ゲストメモリ全領域の fd とオフセット"]
+    A --> C["set_vring_addr<br/>descriptor table / available ring / used ring の<br/>ホスト側アドレス"]
+    A --> D["set_vring_base<br/>現在の available ring インデックス"]
+    A --> E["set_vring_call<br/>KVM 登録済みの irqfd = ゲストへの割り込み経路"]
+    A --> F["set_vring_kick<br/>MMIO 通知レジスタに紐付いた ioeventfd = doorbell"]
+    B --> Z["データパス上に Firecracker のコードが 1 行も残らない"]
+    C --> Z
+    D --> Z
+    E --> Z
+    F --> Z
+    Z --> Y["activate 後の VhostUserBlock は<br/>epoll に何も登録していない"]
+```
 
 メモリテーブルの構築はこうなっている。
 

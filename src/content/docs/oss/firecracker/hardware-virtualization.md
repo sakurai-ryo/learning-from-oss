@@ -18,22 +18,16 @@ sidebar:
 
 そこで、こうする。
 
-```
-ゲスト OS を非特権モード (ring 3 相当) で走らせる
-   |
-   +-- ふつうの命令 --> そのまま実行 (高速)
-   |
-   +-- 特権命令      --> CPU が例外を上げる (トラップ)
-                            |
-                            v
-                     VMM が制御を受け取る
-                            |
-                            v
-                     「ゲストがやりたかったこと」を
-                     VMM の側で安全に模倣する (エミュレート)
-                            |
-                            v
-                     ゲストに制御を返す
+```mermaid
+flowchart TB
+    G["ゲスト OS を非特権モード (ring 3 相当) で走らせる"]
+    G --> D{"実行しようとしたのは<br/>どんな命令か"}
+    D -- "ふつうの命令<br/>add / mov / jmp" --> N["実 CPU でそのまま実行<br/>= 高速"]
+    D -- "特権命令<br/>CR3 書き換え / cli / out" --> T["CPU が例外を上げる<br/>= トラップ"]
+    T --> V["VMM が制御を受け取り、<br/>ゲストがやりたかったことを<br/>安全に模倣する = エミュレート"]
+    V --> R["ゲストに制御を返す"]
+    N --> G
+    R --> G
 ```
 
 これが **トラップ&エミュレート** だ。特権命令だけを VMM が肩代わりし、それ以外は実 CPU に任せる。
@@ -56,22 +50,20 @@ Intel VT-x（AMD なら AMD-V / SVM）は、この問題を「新しい命令を
 
 従来、x86 の実行モードは ring 0〜3 という 1 本の軸だった。VT-x はこれに **VMX root / VMX non-root** という軸を足した。
 
-```
-                 VMX root モード          VMX non-root モード
-              (ホスト = KVM がいる)      (ゲストがいる)
-            +----------------------+  +----------------------+
-   ring 0   |  ホストカーネル      |  |  ゲストカーネル      |
-            |  (KVM)               |  |                      |
-            +----------------------+  +----------------------+
-   ring 3   |  ホストのユーザー    |  |  ゲストのユーザー    |
-            |  プロセス            |  |  プロセス            |
-            |  (Firecracker)       |  |                      |
-            +----------------------+  +----------------------+
-                       ^                         |
-                       |      VM exit            |
-                       +-------------------------+
-                       |      VM entry           |
-                       +------------------------>+
+```mermaid
+flowchart LR
+    subgraph ROOT["VMX root モード (ホストがいる側)"]
+        direction TB
+        R0["ring 0: ホストカーネル (KVM)"]
+        R3["ring 3: ホストのユーザープロセス<br/>(Firecracker)"]
+    end
+    subgraph NONROOT["VMX non-root モード (ゲストがいる側)"]
+        direction TB
+        N0["ring 0: ゲストカーネル<br/>自分が ring 0 にいると認識している<br/>= 改変が要らない"]
+        N3["ring 3: ゲストのユーザープロセス"]
+    end
+    ROOT -- "VM entry (VMLAUNCH / VMRESUME)" --> NONROOT
+    NONROOT -- "VM exit (ホストに影響する操作)" --> ROOT
 ```
 
 ポイントは、**ゲストカーネルが non-root の ring 0 で動く**ことだ。ゲスト OS は自分が ring 0 にいると認識している。だから改変が要らない。準仮想化のようにソースをいじる必要がない。
@@ -133,18 +125,14 @@ VMCS には直接 `mov` でアクセスできない。専用の `VMREAD` / `VMWR
 
 EPT がない時代、VMM は「シャドウページテーブル」でこれを解決していた。ゲストのページテーブルを監視し、GVA → ホスト物理アドレス (HPA) を直接引く別のテーブルを VMM 側で維持する。ゲストがページテーブルを書き換えるたびに VM exit させて追随する必要があり、複雑で遅かった。EPT は、この 2 段目の変換をハードウェアに持たせた。
 
-```
-   ゲスト仮想アドレス (GVA)
-            |
-            |  ゲストのページテーブル (CR3 がゲストのものを指す)
-            |  ゲスト OS が管理
-            v
-   ゲスト物理アドレス (GPA)
-            |
-            |  EPT (EPTP が指す)
-            |  KVM が管理
-            v
-   ホスト物理アドレス (HPA)
+```mermaid
+flowchart LR
+    GVA["GVA<br/>ゲスト仮想アドレス"]
+    GPA["GPA<br/>ゲスト物理アドレス"]
+    HPA["HPA<br/>ホスト物理アドレス"]
+    GVA -- "ゲストのページテーブル<br/>ゲスト OS が管理 (CR3)" --> GPA
+    GPA -- "EPT<br/>KVM が管理 (EPTP)" --> HPA
+    GPA -. "EPT にマップされていない<br/>= EPT violation で VM exit" .-> MMIO["VMM のデバイスモデルが処理<br/>= MMIO の正体"]
 ```
 
 MMU は 2 段のテーブルを両方引いて、GVA から HPA まで一気に変換する。ゲストが自分のページテーブルを書き換えても VM exit は起きない。ゲスト内のページフォルトはゲストカーネルが処理する。
@@ -162,6 +150,33 @@ VM exit が起きるのは、**EPT の側で変換に失敗したとき**だ。�
 Firecracker がやるのは、`/dev/kvm` に対する ioctl だけだ。「VM を作れ」「vCPU を作れ」「このメモリ範囲をゲスト物理アドレスのここに割り当てろ」「vCPU を走らせろ」。VMCS の組み立ても EPT の構築も、KVM の中で完結する。
 
 Firecracker から見えるのは、**exit の結果だけ**だ。「vCPU を走らせろ」と頼んだら制御が戻ってきて、「MMIO のリード要求だった」「PIO のライト要求だった」という**分類済みの情報**が渡される。
+
+ここまでの登場人物を 1 回転ぶんつなぐと、こうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant FC as Firecracker<br/>(vCPU スレッド)
+    participant KVM as KVM<br/>(ホストカーネル)
+    participant CPU as CPU (VT-x)
+    participant G as ゲスト
+
+    FC->>KVM: ioctl(KVM_RUN)
+    KVM->>CPU: VM entry
+    Note over CPU: VMCS の Guest-state area から<br/>レジスタをロード
+    CPU->>G: ゲストのコードを実行
+    G->>CPU: 0xd0000000 に書き込み
+    Note over CPU: EPT にマップがない → VM exit<br/>レジスタを VMCS へ保存
+    CPU->>KVM: exit reason = EPT violation
+    alt カーネル内で完結できる exit
+        KVM->>CPU: そのまま VM entry
+    else ユーザースペースが必要な exit
+        KVM-->>FC: KVM_RUN から復帰
+        Note over FC: VcpuExit::MmioWrite(addr, data)<br/>として分類済みで届く
+        FC->>FC: mmio_bus.write(addr, data)
+        FC->>KVM: ioctl(KVM_RUN) で再開
+    end
+```
 
 その受け口が `handle_kvm_exit` だ。
 

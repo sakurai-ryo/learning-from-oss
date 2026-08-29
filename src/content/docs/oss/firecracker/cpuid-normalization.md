@@ -17,16 +17,15 @@ sidebar:
 
 同じことがブートプロトコル用の MSR 設定についても書かれている ([docs/cpu_templates/boot-protocol.md#L1-L9](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/docs/cpu_templates/boot-protocol.md#L1-L9))。
 
-```
-KVM_GET_SUPPORTED_CPUID     ← ホストと KVM が「出せる」もの
-        ▼
-  テンプレート適用          ← 利用者が「見せたい」もの (全 vCPU 共通)
-        ▼
-  CPUID 正規化              ← Firecracker が「そうでなければ困る」もの (vCPU ごと)
-        ▼
-  KVM_SET_CPUID2
-        ▼
-  ブートプロトコルの MSR 設定
+```mermaid
+flowchart TB
+    A["KVM_GET_SUPPORTED_CPUID<br/>ホストと KVM が「出せる」もの"]
+    B["テンプレート適用<br/>利用者が「見せたい」もの — 全 vCPU 共通の 1 個"]
+    C["CPUID 正規化<br/>Firecracker が「そうでなければ困る」もの — vCPU ごと"]
+    D["KVM_SET_CPUID2"]
+    E["ブートプロトコルの MSR 設定"]
+    A --> B --> C --> D --> E
+    C -. "テンプレートが同じビットを触っていても<br/>ここで上書きされる" .-> B
 ```
 
 正規化の内容は 3 種類に分けると整理しやすい。
@@ -111,6 +110,18 @@ leaf 0x0 の EBX / ECX / EDX (ベンダー ID 文字列) は**ホストから無
 ([src/vmm/src/cpu_config/x86_64/cpuid/normalize.rs#L172-L185](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/cpu_config/x86_64/cpuid/normalize.rs#L172-L185))
 
 Intel 側は 6 段 (`update_deterministic_cache_entry` / `update_power_management_entry` / `update_extended_feature_flags_entry` / `update_performance_monitoring_entry` / `update_extended_topology_v2_entry` / `update_brand_string_entry`、[intel/normalize.rs#L72-L77](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/cpu_config/x86_64/cpuid/intel/normalize.rs#L72-L77))。関数名が処理の目次になっていて、ドキュメントの表と 1 対 1 で対応する。
+
+```mermaid
+flowchart TB
+    N["Cpuid::normalize(cpu_index, cpu_count, cpu_bits, cpus_per_core)"]
+    N --> C1["update_vendor_id()<br/>ホストの cpuid 命令から直接コピー"]
+    C1 --> C2["update_feature_info_entry()<br/>APIC ID / HTT を再計算、PDCM=0、HYPERVISOR=1"]
+    C2 --> C3["update_extended_topology_entry()<br/>leaf 0xb を組み直し、KVM が返さない subleaf 0x1 は自分で挿入"]
+    C3 --> C4["update_extended_cache_features()"]
+    C4 --> V{"ベンダーは"}
+    V -- "Intel" --> I["決定的キャッシュ / 電源管理 (Turbo=0, EPB=0) /<br/>拡張機能フラグ (WAITPKG=0) / 性能監視 (leaf 0xa を全消し) /<br/>拡張トポロジ v2 / ブランド文字列"]
+    V -- "AMD" --> M["leaf 0x7 EDX bit 29 を落とす<br/>KVM が無条件に立てるが HW は未実装 /<br/>ブランド文字列"]
+```
 
 ### ベンダー ID のパススルー
 

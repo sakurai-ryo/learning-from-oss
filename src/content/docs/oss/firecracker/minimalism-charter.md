@@ -54,6 +54,23 @@ Firecracker がゲストに見せる legacy デバイスは、x86_64 でシリ�
 
 「同じことをする 2 通りのやり方」が現れるたびに、片方が DEPRECATED.md に載って消える予定が立つ。しかも `docs/RELEASE_POLICY.md` が「deprecated な要素は次のメジャーバージョンで**必ず削除される**」と書いているので、このリストは棚上げの置き場ではなく削除予定表として機能する。
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    A: 1 capability に実装が 2 つある
+    B: 憲章の言う exception<br/>= 高優先度の issue
+    C: DEPRECATED.md に PR 番号付きで載る
+    D: 使うと起動時に警告が出る
+    E: 次のメジャーバージョンで削除
+
+    [*] --> A: 置き換えとなる実装が入った
+    A --> B: 「解消すべき例外」と定義される
+    B --> C
+    C --> D
+    D --> E
+    E --> [*]: 1 capability = 1 実装に戻る
+```
+
 ### 明示的な非目標
 
 「作らない」は、デバイスの取捨選択だけでなく、機能領域そのものにも及ぶ。`docs/design.md` の Threat Containment 節に、こう書かれている。
@@ -121,6 +138,16 @@ match offset {
 ```
 
 ゲストが port 0x64 に `0xFE` を書いたら eventfd を叩き、VMM スレッドがそれで起きて終了する。それだけである。
+
+```mermaid
+flowchart TB
+    G["ゲストが reboot(2) を呼ぶ"] --> L["Linux が i8042 の port 0x64 に<br/>0xFE (CMD_RESET_CPU) を書く"]
+    L --> PIO["PIO exit → I8042Device::write"]
+    PIO --> M{"offset == OFS_STATUS かつ<br/>data[0] == CMD_RESET_CPU か"}
+    M -- "はい" --> EV["reset_evt.write(1)"]
+    EV --> VMM["VMM スレッドが起きて<br/>Firecracker プロセスを終了する"]
+    M -- "いいえ" --> N["3 つのレジスタを更新するだけ<br/>スキャンコード変換も AUX ポートも<br/>マルチプレクサも持たない"]
+```
 
 残りのコマンド（`CMD_READ_CTR` / `CMD_WRITE_CTR` / `CMD_READ_OUTP` / `CMD_WRITE_OUTP`）と、Ctrl+Alt+Del のスキャンコード注入（[`src/vmm/src/devices/legacy/i8042.rs#L136-L140`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/legacy/i8042.rs#L136-L140)）は実装されているが、これも「Linux のドライバがプローブ時に叩く分」と「ソフトリブート要求を送り込む分」に限られる。任意のキー入力を扱う経路はない。ソフトリブートは API の `SendCtrlAltDel` アクションから `Vmm::send_ctrl_alt_del()` を経由して注入される（[`src/vmm/src/lib.rs#L485-L497`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/lib.rs#L485-L497)）。
 

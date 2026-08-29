@@ -14,15 +14,19 @@ sidebar:
 
 virtio-balloon はこの情報ギャップを埋める。ホストがターゲットサイズを指定すると、ゲストの balloon ドライバがそのぶんのページを **ゲスト内で確保** し（誰にも使わせない状態にする）、確保したページのページフレーム番号 (PFN) を inflate キューに載せてホストへ送る。ホストは「このゲスト物理アドレスはもう誰も使っていない」と知り、対応するホストメモリを解放する。逆に deflate はゲストにページを返す操作で、ホスト側は何もしない（ゲストが次にアクセスしたときにフォールトで再割り当てされる）。
 
-```
-ゲスト                                ホスト (Firecracker プロセス)
-+------------------------+           +---------------------------------+
-| balloon driver         |           | 4 GiB の匿名 mmap               |
-|  ページを alloc        |           |  [使用中][使用中][ ][使用中]... |
-|  PFN 一覧を inflate    | --------> | discard_range()                 |
-|  キューへ              |   virtq   |  → MADV_DONTNEED でページを解放 |
-+------------------------+           +---------------------------------+
-                                       次にゲストが触ると → ゼロページ
+```mermaid
+flowchart LR
+    subgraph g["ゲスト"]
+        D["balloon driver<br/>ページを alloc して誰にも使わせない状態にし<br/>PFN 一覧を inflate キューへ載せる"]
+    end
+    subgraph h["ホスト (Firecracker プロセス)"]
+        direction TB
+        M["4 GiB の匿名 mmap<br/>使用中 / 使用中 / 空き / 使用中 ..."]
+        DR["discard_range()<br/>→ MADV_DONTNEED でページを解放"]
+        M --- DR
+    end
+    D -- "virtqueue で PFN を送る" --> DR
+    DR --> Z["次にゲストが触ると<br/>カーネルが匿名ページをゼロ埋めして返す"]
 ```
 
 ### 実装の要点は 3 つ
@@ -120,6 +124,19 @@ inflate キューの処理は、まずディスクリプタから PFN を `pfn_b
 ```
 
 つまり **vhost-user を使うときのように memfd バックのゲストメモリでは、balloon の inflate は RSS を落とせていない**。`MAP_SHARED` の fd マッピングに対する `MADV_DONTNEED` はそのプロセスのマッピングを落とすだけで、memfd 側のページは残るからだ。正しくは `fallocate(FALLOC_FL_PUNCH_HOLE)` が要る。ただしこの経路でも **隔離は壊れない**。ページが解放されないだけで他プロセスに漏れるわけではないので、安全性ではなく効果が失われるだけであり、既存挙動を維持したまま TODO にしてある、と読める。
+
+```mermaid
+flowchart TB
+    A["discard_range(addr, len)"] --> B{"マッピングの種類は"}
+    B -- "ファイルバック かつ MAP_PRIVATE<br/>= スナップショットから復元した VM" --> C["同じアドレスに匿名 mmap を MAP_FIXED で被せる<br/>ファイルバックの VMA が匿名 VMA に置き換わる"]
+    B -- "匿名 mmap、または memfd の MAP_SHARED" --> D["madvise(MADV_DONTNEED)"]
+    C --> Z["次のフォールトはゼロページを返す"]
+    D --> Z
+    N["MADV_DONTNEED をファイル private に打つと<br/>「匿名の上書きページを捨てて元のファイル内容に戻す」意味になり、<br/>解放したページにスナップショット時点のデータが復活してしまう"]
+    N -.-> C
+    T["memfd の MAP_SHARED では MADV_DONTNEED が効かず RSS は落ちない<br/>正しくは fallocate(FALLOC_FL_PUNCH_HOLE)<br/>= 効果は失われるが隔離は壊れないので TODO のまま"]
+    T -.-> D
+```
 
 ### reporting / hinting は同じ出口に合流する
 

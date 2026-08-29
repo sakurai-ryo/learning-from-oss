@@ -14,11 +14,12 @@ Firecracker は関数の入口と出口でトレースログを出す仕組み�
 
 代わりに、必要になったときにソースツリー全体を機械的に書き換えて計装を挿入し、使い終わったら剥がす。そのためのツールが `src/clippy-tracing/` である。
 
-```
-通常の状態                    デバッグしたいとき                    片付け
-─────────                    ─────────────────                    ──────
-src/ に計装なし    ──fix──▶  全関数に #[instrument]     ──strip──▶  元に戻る
-                             + cargo build --features tracing
+```mermaid
+flowchart LR
+    A["通常の状態<br/>src/ に計装が 1 つも書かれていない"] -- "clippy-tracing --action fix" --> B["全関数に instrument 属性が入る<br/>+ cargo build --features tracing"]
+    B -- "clippy-tracing --action strip" --> A
+    N["「デフォルトでオフ」ではなく「デフォルトで存在しない」<br/>バイナリサイズは約 100 KB 増え、性能は 10 倍以上劣化する"]
+    N -.-> B
 ```
 
 「デフォルトでオフ」ではなく「デフォルトで存在しない」。この差が主題である。
@@ -32,6 +33,19 @@ src/ に計装なし    ──fix──▶  全関数に #[instrument]     ─�
 | `src/clippy-tracing/`        | ソース変換 CLI。`--action check` / `fix` / `strip` でツリー全体に属性を検査・挿入・削除する |
 
 `clippy-tracing` は `syn` でファイルをパースし、関数定義を訪問して属性行を足したり消したりする。汎用のツールとして独立していて、Firecracker のコードには依存していない。
+
+```mermaid
+flowchart TB
+    C["src/clippy-tracing/<br/>ソース変換 CLI。syn でパースして<br/>check / fix / strip をツリー全体に適用する"]
+    M["src/log-instrument-macros/<br/>属性マクロ。関数本体の先頭に<br/>__Instrument::new(関数名) を 1 文挿入する"]
+    R["src/log-instrument/<br/>実行時側。スレッドごとの呼び出しパスを保持し、<br/>入口と出口を log::trace! で出す<br/>出口は Drop 実装が担当するので早期 return や panic でも出る"]
+    C -- "fix が挿入し、strip が消す" --> M
+    M --> R
+    E["除外リスト<br/>tests / bindings / 計装ツール自身 /<br/>ログ経路 (logger.rs, signal_handler.rs, time.rs)"]
+    E -.-> C
+    N["ログ経路を除外するのは、計装がログを出すから<br/>ログを出す関数を計装すると無限ループになる"]
+    N -.-> E
+```
 
 ### 理由は性能である
 

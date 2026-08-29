@@ -76,21 +76,20 @@ struct UsedRing {
 
 ブロックデバイスへの読み出しを例にする。ドライバは「このリクエストヘッダを読んで、このバッファにデータを書いて、このステータスバイトに結果を書け」と言いたい。
 
-```
-                       ゲスト物理メモリ (ホストからは mmap で見える)
-  ┌──────────────────────────────────────────────────────────────────┐
-  │  descriptor table                                                │
-  │   [0] addr=0x1000 len=16   flags=NEXT      next=1   ← リクエストヘッダ (読み) │
-  │   [1] addr=0x2000 len=4096 flags=NEXT|WRITE next=2  ← データ用    (書き) │
-  │   [2] addr=0x3000 len=1    flags=WRITE     next=-   ← ステータス  (書き) │
-  │   [3] ...                                                        │
-  │                                                                  │
-  │  available ring          idx=1                                   │
-  │   ring[0] = 0   ← 「添字 0 から始まる鎖を処理せよ」                │
-  │                                                                  │
-  │  used ring               idx=0                                   │
-  │   (まだ空)                                                        │
-  └──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph mem["ゲスト物理メモリ — ホストからは mmap で見えている"]
+        direction TB
+        AV["available ring<br/>idx = 1 / ring[0] = 0<br/>ドライバだけが書く"]
+        D0["descriptor[0] addr=0x1000 len=16<br/>flags = NEXT<br/>リクエストヘッダ / デバイスが読む"]
+        D1["descriptor[1] addr=0x2000 len=4096<br/>flags = NEXT + WRITE<br/>データ用 / デバイスが書く"]
+        D2["descriptor[2] addr=0x3000 len=1<br/>flags = WRITE<br/>ステータス / デバイスが書く"]
+        US["used ring<br/>idx = 0 (まだ空)<br/>デバイスだけが書く"]
+        AV -- "鎖の先頭の添字 0" --> D0
+        D0 -- "next = 1" --> D1
+        D1 -- "next = 2" --> D2
+        D2 -. "処理し終えたら id=0, len=4097 を積む" .-> US
+    end
 ```
 
 手順はこうなる。
@@ -104,6 +103,26 @@ struct UsedRing {
 7. **デバイスが割り込みを上げる。** 前のページの irqfd だ。ドライバは割り込みハンドラで used ring を読み、`id` から自分のリクエストを特定して完了処理をする。
 
 exit が発生するのは 3 の kick 1 回だけ、割り込みも 1 回だけになる。しかも **kick は ioeventfd に登録できる**ので、`KVM_RUN` から抜けずカーネル内で eventfd の signal に化ける。実機エミュレーションの数回の往復が、原理的にゼロ回まで落ちる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DRV as ドライバ<br/>(ゲストのカーネル)
+    participant MEM as virtqueue<br/>(共有メモリ)
+    participant DEV as デバイス<br/>(VMM 側)
+
+    DRV->>MEM: バッファを descriptor 0 / 1 / 2 に並べる
+    DRV->>MEM: available ring に鎖の先頭 0 を積み、avail.idx を +1
+    Note over DRV,MEM: ring への書き込み → メモリバリア → idx 更新 の順
+    DRV->>DEV: kick (QueueNotify レジスタへの書き込み)
+    Note over DEV: ioeventfd に登録済みなら KVM_RUN から抜けず<br/>カーネル内で eventfd の signal に化ける
+    DEV->>MEM: next_avail と avail.idx を比べ、鎖をたどる
+    DEV->>DEV: ホストのファイルから読み出す
+    DEV->>MEM: descriptor 1 のバッファに memcpy、2 にステータスを書く
+    DEV->>MEM: used ring に id=0, len=4097 を積み、used.idx を進める
+    DEV->>DRV: 割り込み (irqfd に write するだけ)
+    DRV->>MEM: used ring を読み、id から自分のリクエストを特定する
+```
 
 ## descriptor chain — 1 リクエスト = 複数バッファ
 
@@ -138,25 +157,31 @@ exit を 1 回、割り込みを 1 回まで減らしたが、それでもまだ
 
 feature の握手には順序がある。「ドライバが features を書く前にキューのアドレスを設定してはいけない」といった制約を、virtio は **device status レジスタ**という 1 バイトのビットフィールドで表現する。ドライバはビットを立てていくだけで、決して下ろさない。
 
-```
-   0 (INIT)
-     │  ドライバがデバイスを認識した
-     ▼
-   ACKNOWLEDGE (1)
-     │  ドライバがこのデバイスを扱えると判断した
-     ▼
-   ACKNOWLEDGE | DRIVER (1|2)
-     │  feature をネゴシエートし終えた
-     ▼
-   ACKNOWLEDGE | DRIVER | FEATURES_OK (1|2|8)
-     │  virtqueue のアドレスを設定し終えた
-     ▼
-   ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK (1|2|8|4)
-     = デバイスが「稼働中」になる
+```mermaid
+stateDiagram-v2
+    direction TB
+    S0: 0 = INIT
+    S1: ACKNOWLEDGE (1)
+    S2: + DRIVER (3)
+    S3: + FEATURES_OK (11)
+    S4: + DRIVER_OK (15) = 稼働中
+    F: FAILED (128)
+    R: DEVICE_NEEDS_RESET (64)
 
-   FAILED (128)          : ドライバが諦めた。リセットするまで復帰しない
-   DEVICE_NEEDS_RESET(64): デバイス側が壊れた。ドライバに知らせる
-   0 を書く              : リセット
+    [*] --> S0
+    S0 --> S1: ドライバがデバイスを認識した
+    S1 --> S2: このデバイスを扱えると判断した
+    S2 --> S3: feature をネゴシエートし終えた
+    S3 --> S4: virtqueue のアドレスを設定し終えた
+    S1 --> F: ドライバが諦めた
+    S2 --> F
+    S3 --> F
+    F --> S0: 0 を書く = リセット
+    S4 --> R: デバイス側が壊れた
+    note right of S4
+        デバイスがバッファの処理を
+        始めてよいのはここから
+    end note
 ```
 
 **デバイス側がバッファの処理を始めてよいのは `DRIVER_OK` が立った瞬間から**だ。それ以前は virtqueue のアドレスすら確定していないので、available ring を読むこと自体が未定義になる。この 1 点が、VMM の実装で最も間違えやすい。

@@ -36,21 +36,21 @@ pub enum DeviceState {
 
 ライフサイクル全体はこうなる。
 
-```
-  デバイス生成 ──> Inactive      queues[]: アドレス未設定 / mem, interrupt: 手段なし
-       │
-  [ACKNOWLEDGE → DRIVER → FEATURES_OK]  この間にゲストが queue のアドレスを書く
-       │
-  [DRIVER_OK] ─> MmioTransport::set_device_status ─> device.activate(mem, interrupt)
-       ▼
-              Activated(ActiveState { mem, interrupt })
-       │       queue.initialize(&mem) 済み = 生ポインタが解決済み
-       │
-  [device status に 0] ─> device.reset()
-       │                    _reset() → deactivate() → acked_features=0
-       │                    → Queue::new(max_size) で作り直し
-       ▼
-              Inactive (最初に戻る)
+```mermaid
+stateDiagram-v2
+    direction TB
+    I: Inactive<br/>queues のアドレスは未設定<br/>mem も interrupt も持っていない
+    A: Activated(ActiveState)<br/>mem と interrupt を保持<br/>queue.initialize 済みで生ポインタが解決されている
+
+    [*] --> I: デバイス生成
+    I --> I: ACKNOWLEDGE → DRIVER → FEATURES_OK<br/>この間にゲストが queue のアドレスを書く
+    I --> A: DRIVER_OK を書き込む<br/>トランスポートが device.activate(mem, interrupt) を呼ぶ
+    A --> I: device status に 0 を書く = リセット<br/>_reset → deactivate → acked_features=0<br/>→ 全キューを max_size で作り直し
+
+    note right of I
+        activate が途中の ? で抜けても Inactive のまま
+        DEVICE_NEEDS_RESET を立てて config 割り込みを上げる
+    end note
 ```
 
 もう 1 つの主題が `reset()` だ。これはトレイトの**デフォルト実装として与えられ、ドキュメントコメントで「override するな」と明示されている**。デバイス実装者が書けるのは `_reset()` というデバイス固有の部分だけで、その後の「非アクティブ化 → feature のクリア → キューの作り直し」は必ず同じ順序で実行される。テンプレートメソッドをトレイトのデフォルト実装で表現した形になっている。
@@ -173,6 +173,19 @@ pub enum DeviceState {
 `_reset()` はデバイス固有で、net なら RX/TX バッファを空にするだけ、reset をサポートしないバックエンドは `false` を返す。`false` が返るとトランスポート側は `FAILED` ビットを立ててリセット自体を失敗させる ([`src/vmm/src/devices/virtio/transport/mmio.rs#L181-L188`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/virtio/transport/mmio.rs#L181-L188))。
 
 キューを `Queue::new(queue.max_size)` で作り直しているのが重要で、これで `desc_table_ptr` などの生ポインタが null に戻り、`ready` が `false` に、`next_avail` / `next_used` / `uses_notif_suppression` も初期値に戻る。**古いゲストメモリのアドレスを指したポインタが `Inactive` のデバイスに残らない。**
+
+```mermaid
+flowchart TB
+    G["ゲストが device status に 0 を書く"] --> T["トランスポートが device.reset() を呼ぶ"]
+    T --> R["reset() — トレイトのデフォルト実装<br/>ドキュメントコメントで「override するな」と明示"]
+    R --> S1["1. _reset() — ここだけがデバイス固有<br/>net なら RX / TX バッファを空にする"]
+    S1 --> Q{"false が返ったか<br/>= reset 非対応のバックエンド"}
+    Q -- "はい" --> F["トランスポートが FAILED ビットを立て<br/>リセット自体を失敗させる"]
+    Q -- "いいえ" --> S2["2. deactivate() → DeviceState::Inactive"]
+    S2 --> S3["3. set_acked_features(0)"]
+    S3 --> S4["4. Queue::new(max_size) で全キューを作り直す<br/>desc_table_ptr が null に戻り ready が false になる"]
+    S4 --> E["古いゲストメモリを指すポインタが<br/>Inactive のデバイスに残らない"]
+```
 
 ## なぜそうなっているか
 

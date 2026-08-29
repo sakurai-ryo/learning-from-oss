@@ -26,6 +26,38 @@ Firecracker は Rust で書かれた VMM だが、`/dev/kvm` に対する `ioctl
 
 たとえば `Kvm::new()` は `kvm_ioctls::Kvm::new()` を呼び、API バージョンを確認し、必要な capability が揃っているかを見るだけである。`ioctl(KVM_GET_API_VERSION)` を自分で発行してはいない。`KvmVm` も `VmCommon.fd: VmFd` を保持していて、`create_irq_chip()` や `set_user_memory_region()` は `kvm-ioctls` のメソッド呼び出しである。
 
+```mermaid
+flowchart LR
+    subgraph fc["Firecracker (src/vmm)"]
+        direction TB
+        K["Kvm / KvmVm / KvmVcpu"]
+        D["virtio・legacy デバイス群"]
+        E["イベントループ"]
+    end
+    subgraph rv["rust-vmm のクレート"]
+        direction TB
+        KI["kvm-ioctls<br/>Kvm / VmFd / VcpuFd"]
+        KB["kvm-bindings<br/>UAPI 構造体・定数"]
+        VM["vm-memory<br/>GuestMemoryMmap"]
+        LL["linux-loader<br/>ELF / bzImage"]
+        VA["vm-allocator<br/>アドレス空間・GSI"]
+        SU["vmm-sys-util<br/>EventFd / ioctl マクロ"]
+        VS["vm-superio<br/>UART / RTC"]
+        VH["vhost<br/>vhost-user フロントエンド"]
+        EM["event-manager<br/>epoll"]
+    end
+    K --> KI
+    KI --> KB
+    K --> VM
+    K --> LL
+    K --> VA
+    D --> SU
+    D --> VS
+    D --> VH
+    E --> EM
+    KI -- "ioctl(2)" --> DEV["/dev/kvm"]
+```
+
 ### 直接 ioctl を組み立てているのは 1 箇所だけ
 
 `src/` 全体で `ioctl_iow_nr!` / `ioctl_with_ref` / `libc::ioctl` を grep すると、ヒットするのは 3 ファイルである。
@@ -255,6 +287,16 @@ Firecracker の[脅威モデル](../threat-model/)では、ゲストは悪意あ
 4. 上流がリリースされたら消す
 
 3 が重要である。TODO に URL がなければ、その定義は永久に残る。**「一時的な回避」を一時的なままにするための仕組み**が、コメントの書式として運用されている。
+
+```mermaid
+flowchart TB
+    A["上流 (rust-vmm) にない機能が必要になった"] --> B["1. 上流に PR を出す"]
+    B --> C["2. リリースまでの間、手元に最小限の定義を置く"]
+    C --> D["3. 定義の直上に、上流の PR URL と<br/>置き換え条件を書く"]
+    D --> E{"その PR を含むリリースが出たか"}
+    E -- "まだ" --> C
+    E -- "出た" --> F["4. 手元の定義を消し、上流の API に置き換える"]
+```
 
 `[patch]` セクションを使っていないことも同じ方向を向いている。フォークして `[patch]` で差し替えると、その場は動くが、上流に戻す圧力がなくなる。定義を 1 つだけ手元に置く方が、痛みが残る分だけ戻しやすい。
 

@@ -34,12 +34,24 @@ vCPU をブート可能な状態にするには、CPUID と MSR の両方を設�
 
 実装は 4 つのフェーズに分かれるが、**フェーズ 2 と 3 の間の壁が本質**である。2 が全 vCPU に対するループ、3 が vCPU 0 だけへの問い合わせになっているのは、**全 vCPU の CPUID を設定し終えてからでないと読めない**（正確には、読む対象の vCPU の CPUID が設定済みでなければならない）ためだ。
 
-```
-        [全 vCPU]                              [vCPU 0 のみ]
-cpuid ──> normalize ──> KVM_SET_CPUID2  ═══>  KVM_GET_MSRS ──> template
-                                                                   │
-        [全 vCPU]                                                  │
-KVM_SET_MSRS <── boot MSR 追加 <── 共有 msrs  <─────────────────────┘
+```mermaid
+flowchart TB
+    subgraph p12["フェーズ 1・2 — 全 vCPU"]
+        direction LR
+        A["kvm.supported_cpuid"] --> B["テンプレートの modifier を適用"]
+        B --> C["KVM_SET_CPUID2<br/>各 vCPU に正規化済み CPUID を設定"]
+    end
+    subgraph p34["フェーズ 3・4 — vCPU 0 のみ"]
+        direction LR
+        D["KVM_GET_MSRS<br/>CPUID 依存の MSR を読む"] --> E["テンプレートの modifier を適用"]
+    end
+    subgraph p4["フェーズ 4 — 全 vCPU"]
+        direction LR
+        F["Linux ブート用 MSR を追加"] --> G["KVM_SET_MSRS<br/>各 vCPU に設定"]
+    end
+    C -- "越えられない壁<br/>CPUID が未設定だと MSR にゼロが返る" --> D
+    E --> F
+    C -. "設定した実物の CpuId を<br/>戻り値として持ち回る" .-> G
 ```
 
 MSR は vCPU 0 から 1 回だけ読み、その結果を全 vCPU に配る。CPU テンプレートはマシン全体の設定なので、vCPU ごとに違う値になる理由が無い。

@@ -14,13 +14,15 @@ sidebar:
 
 そのため、保存の順序に意味が生まれる。
 
-```
-Vmm::save_state()
-  1. check_unsnapshottable_devices()   <- 保存できないデバイスがあれば、何も書かずに失敗
-  2. device_manager.save()             <- 各デバイスの prepare_save() が走る（副作用あり）
-  3. kvm_vm.save_vcpu_states()         <- KVM_GET_* 群
-  4. kvm_vm.kvm().save_state()
-  5. kvm_vm.save_state()               <- PIT / PIC / IOAPIC / kvmclock を吸い上げる
+```mermaid
+flowchart TB
+    A["Vmm::save_state()"] --> B["1. check_unsnapshottable_devices()<br/>保存できないデバイスがあれば、1 バイトも書かずに失敗する"]
+    B --> C["2. device_manager.save()<br/>各デバイスの prepare_save() が走る = 副作用あり"]
+    C --> D["3. kvm_vm.save_vcpu_states() — KVM_GET_* 群"]
+    D --> E["4. kvm_vm.kvm().save_state()"]
+    E --> F["5. kvm_vm.save_state()<br/>PIT / PIC / IOAPIC / kvmclock を吸い上げる"]
+    N["prepare_save() はゲストに割り込みを送ることがあり、<br/>その割り込みは IOAPIC の RTE や LAPIC の IRR/ISR に残る<br/>= 書き手 (デバイス) を先に、読み手 (KVM 状態の保存) を後に"]
+    N -.-> C
 ```
 
 割り込みは最終的に KVM 側（LAPIC・IOAPIC）に状態として乗る。だから **デバイスを先に動かし、その結果を含んだ状態を後から KVM から吸い上げる** 必要がある。逆順にすると、デバイスが送った割り込みは「保存された KVM 状態」より後に発生したことになり、復元先にはどこにも存在しない。ゲストから見れば、要求した I/O の完了通知が永久に来ない。
@@ -205,6 +207,21 @@ virtqueue の再 dirty 化は [`src/vmm/src/persist.rs#L195-L200`](https://githu
 ```
 
 理屈は同じである。デバイスの復元が割り込みを注入するので、**KVM 状態の復元（＝上書き）を先に済ませておかないと、注入した割り込みが消える。** 保存では「デバイス → KVM」、復元では「KVM → デバイス」。どちらも「KVM 状態のスナップショット的な読み書きは、デバイスの副作用より外側に置く」という同じ規則から導かれる。VMGenID の話は [`../vmgenid/`](../vmgenid/) で扱う。
+
+```mermaid
+flowchart LR
+    subgraph s["保存 — save_state()"]
+        direction TB
+        S1["デバイス状態<br/>prepare_save() が割り込みを送る"] --> S2["KVM 状態<br/>KVM_GET_IRQCHIP などで吸い上げる"]
+    end
+    subgraph r["復元 — build_microvm_from_snapshot()"]
+        direction TB
+        R1["KVM 状態<br/>KVM_SET_IRQCHIP などで上書きする"] --> R2["デバイス状態<br/>VMGenID の復元が割り込みを注入する"]
+    end
+    N["同じ 1 つの規則から導かれる<br/>KVM 状態のスナップショット的な読み書きは、<br/>デバイスの副作用より外側に置く"]
+    N -.-> s
+    N -.-> r
+```
 
 ### 事前チェックを分離した理由
 

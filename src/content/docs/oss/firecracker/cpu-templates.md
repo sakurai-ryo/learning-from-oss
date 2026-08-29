@@ -23,17 +23,17 @@ vCPU の CPUID は、放っておけばホスト CPU に引きずられる。Fir
 
 CPU テンプレートは、ゲストに見せる CPU の姿を宣言的に記述したものだ。x86_64 では CPUID と MSR、aarch64 では ARM レジスタと vCPU features、両方で KVM capabilities を対象にする ([docs/cpu_templates/cpu-templates.md#L3-L12](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/docs/cpu_templates/cpu-templates.md#L3-L12))。
 
-```
-ホスト A (Skylake)   ホスト B (Cascade Lake)   ホスト C (Ice Lake)
-      │                     │                       │
-  KVM_GET_SUPPORTED_CPUID は 3 台とも違う値を返す
-      ▼                     ▼                       ▼
- ┌──────────────────────────────────────────────────────┐
- │  同一の CPU テンプレート (CPUID / MSR modifier の列)  │
- └──────────────────────────────────────────────────────┘
-      ▼                     ▼                       ▼
-  ゲストから見える CPUID・MSR がホストによらず同じになる
-      → スナップショットを 3 台のあいだで往復させられる
+```mermaid
+flowchart TB
+    HA["ホスト A (Skylake)"] --> KA["KVM_GET_SUPPORTED_CPUID"]
+    HB["ホスト B (Cascade Lake)"] --> KB["KVM_GET_SUPPORTED_CPUID"]
+    HC["ホスト C (Ice Lake)"] --> KC["KVM_GET_SUPPORTED_CPUID"]
+    KA -- "3 台とも違う値を返す" --> T
+    KB --> T
+    KC --> T
+    T["同一の CPU テンプレート<br/>CPUID / MSR modifier の列"]
+    T --> G["ゲストから見える CPUID・MSR が<br/>ホストによらず同じになる"]
+    G --> S["スナップショットを 3 台のあいだで往復させられる"]
 ```
 
 ドキュメントはこの用途をそのまま挙げている。"A real world use case for this is representing a heterogeneous fleet (a fleet consisting of multiple CPU models) as a homogeneous fleet, so the guests will experience a consistent feature set supported by the host." ([同 #L14-L17](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/docs/cpu_templates/cpu-templates.md#L14-L17))
@@ -75,6 +75,20 @@ T2 と C3 は AWS の T2 / C3 インスタンスの機能セットに寄せた�
 ([src/vmm/src/cpu_config/x86_64/static_cpu_templates/mod.rs#L66-L77](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/cpu_config/x86_64/static_cpu_templates/mod.rs#L66-L77))
 
 この表はテンプレートの取り出し口で使われる。静的テンプレートが指定されたら、ホストのベンダー ID と Family/Model/Stepping を実際に読み、対応表にないなら `CpuVendorMismatched` / `InvalidCpuModel` で起動前に弾く。チェックを抜けた先で返るのは `Cow::Owned(t2s::t2s())` のような値、つまり **`CustomCpuTemplate` そのもの**だ ([src/vmm/src/cpu_config/x86_64/custom_cpu_template.rs#L28-L62](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/cpu_config/x86_64/custom_cpu_template.rs#L28-L62))。テンプレート未指定のときも空の `CustomCpuTemplate::default()` が返る。つまり内部に「静的テンプレートを適用する経路」は存在しない。**静的テンプレートは、あらかじめ用意された custom テンプレートを返すだけの関数**になっている。
+
+```mermaid
+flowchart TB
+    A{"cpu_template の指定は"}
+    A -- "静的<br/>C3 / T2 / T2S / T2CL / T2A" --> B["ホストのベンダー ID と<br/>Family/Model/Stepping を実際に読む"]
+    B --> C{"get_supported_cpu_models() に<br/>そのモデルが含まれるか"}
+    C -- "含まれない" --> D["CpuVendorMismatched / InvalidCpuModel<br/>起動前に弾く"]
+    C -- "含まれる" --> E["対応する CustomCpuTemplate を返す<br/>例: t2s::t2s()"]
+    A -- "custom (JSON)" --> F["パースした CustomCpuTemplate"]
+    A -- "指定なし" --> H["CustomCpuTemplate::default() = 空"]
+    E --> I["適用経路はここから先の 1 本だけ<br/>「静的テンプレートを適用する経路」は存在しない"]
+    F --> I
+    H --> I
+```
 
 ### テンプレートが実際に書いていること
 

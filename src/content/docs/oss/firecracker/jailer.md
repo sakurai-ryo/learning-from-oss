@@ -14,25 +14,23 @@ jailer は root で起動し、chroot / namespace / cgroup / 権限降格を設�
 
 何をどの順でやるかが、そのまま設計の中身である。
 
-```
-main_exec()
- └ sanitize_process()
-    ├ close_range(3, UINT_MAX, CLOSE_RANGE_UNSHARE)   継承 fd を全部閉じる
-    └ 全環境変数を削除
- └ Env::new()   引数の検証、cgroup 設定の組み立て、/proc/misc の解決
- └ fs::create_dir_all(<chroot-base>/<exec_file_name>/<id>/root)
- └ Env::run()
-    ├ copy_exec_to_chroot()      firecracker を jail 内へ「コピー」
-    ├ join_netns()               setns(fd, CLONE_NEWNET)
-    ├ resource_limits.install()  setrlimit(RLIMIT_FSIZE / RLIMIT_NOFILE)
-    ├ cgroup_conf.setup()                       ★ chroot より前
-    ├ daemonize なら /dev/null を open          ★ chroot より前
-    ├ chroot()   unshare + MS_SLAVE + bind mount + pivot_root
-    ├ setup_jailed_folder()   "/", "/dev", "/dev/net", "/run" を作って chown
-    ├ mknod_and_own_dev()     tun / kvm / urandom / userfaultfd
-    ├ daemonize なら double fork + setsid + dup2(/dev/null)
-    └ new_pid_ns なら clone(CLONE_NEWPID) してから exec、でなければ直接 exec
-                              Command::uid()/gid() で権限降格
+```mermaid
+flowchart TB
+    A["main_exec()"] --> B["sanitize_process()<br/>close_range(3, UINT_MAX, CLOSE_RANGE_UNSHARE) で継承 fd を全部閉じる<br/>全環境変数を削除する"]
+    B --> C["Env::new()<br/>引数の検証、cgroup 設定の組み立て、/proc/misc の解決"]
+    C --> D["chroot ディレクトリを作る<br/>chroot-base / exec_file_name / id / root"]
+    D --> E["copy_exec_to_chroot() — firecracker を jail 内へ「コピー」する"]
+    E --> F["join_netns() — setns(fd, CLONE_NEWNET)"]
+    F --> G["resource_limits.install() — setrlimit(RLIMIT_FSIZE / RLIMIT_NOFILE)"]
+    G --> H["cgroup_conf.setup() ★ chroot より前"]
+    H --> I["daemonize なら /dev/null を open ★ chroot より前"]
+    I --> J["chroot() — unshare + MS_SLAVE + bind mount + pivot_root"]
+    J --> K["setup_jailed_folder() — / と /dev と /dev/net と /run を作って chown"]
+    K --> L["mknod_and_own_dev() — tun / kvm / urandom / userfaultfd"]
+    L --> M["daemonize なら double fork + setsid + dup2(/dev/null)"]
+    M --> N["new_pid_ns なら clone(CLONE_NEWPID) してから exec<br/>Command::uid() / gid() で権限を落として exec"]
+    NOTE["★ の 2 つは、ホストのファイルシステムが<br/>見えているうちに済ませなければならない"]
+    NOTE -.-> H
 ```
 
 jail 内へ実行ファイルを持ち込むのに**ハードリンクではなくコピー**を使う点は独立した論点なので、[別ページ](../jailer-binary-copy/)に譲る。
@@ -72,13 +70,20 @@ cgroup 側は v1 と v2 の両対応で、`CgroupHierarchies::new` が `/proc/mo
 
 `src/jailer/src/chroot.rs` の `chroot()` は、名前に反して `libc::chroot` を呼ばない。実際にやるのは次の 6 手である。
 
-```
-1. unshare(CLONE_NEWNS)                                    新しい mount namespace へ
-2. mount(NULL, "/", NULL, MS_SLAVE|MS_REC, NULL)           伝播をすべて slave に
-3. mount(chroot_dir, chroot_dir, NULL, MS_BIND|MS_REC, ..) 自分を自分に bind mount
-4. chdir(chroot_dir); mkdir("old_root")
-5. pivot_root(".", "old_root")
-6. chdir("/"); umount2("old_root", MNT_DETACH); rmdir("old_root")
+```mermaid
+flowchart TB
+    S1["1. unshare(CLONE_NEWNS) — 新しい mount namespace へ"] --> S2["2. mount で / 以下の伝播を MS_SLAVE + MS_REC に落とす"]
+    S2 --> S3["3. chroot_dir を自分自身に bind mount する<br/>ただのディレクトリを正式なマウントポイントに仕立てる"]
+    S3 --> S4["4. chdir(chroot_dir) して mkdir(old_root)"]
+    S4 --> S5["5. pivot_root(., old_root)"]
+    S5 --> S6["6. chdir(/) → umount2(old_root, MNT_DETACH) → rmdir(old_root)"]
+    S6 --> R["マウントテーブル上からホストのファイルシステムが消える"]
+    N2["pivot_root は共有 (shared) 伝播のマウントに対して失敗する"]
+    N2 -.-> S2
+    N3["pivot_root は新ルートがマウントポイントであることを要求する"]
+    N3 -.-> S3
+    N4["chroot(2) はパス解決の起点を変えるだけでマウントテーブルには触らない<br/>= 脱出手口が知られている"]
+    N4 -.-> S5
 ```
 
 `chroot(2)` は「パス解決の起点を変える」だけで、マウントテーブルには触らない。プロセスはホストの全マウントを見たままであり、脱出手口も知られている。`pivot_root(2)` は mount namespace のルートマウント自体を差し替える。手順 6 で古いルートを `MNT_DETACH` で外して `rmdir` してしまえば、そのプロセスからホストのファイルシステムはマウントテーブル上に存在しなくなる。
@@ -112,6 +117,18 @@ major / minor はカーネルのドキュメントから取った定数がハー
 **1 回目は `setsid()` を通すため。** `setsid(2)` は呼び出し元がプロセスグループリーダだと `EPERM` で失敗する。シェルから起動された jailer はリーダである可能性が高い。fork した子は親の PGID を継承するがリーダではないので、子で呼べば必ず成功する。親はここで `exit(0)` するので、呼び出し元は待たずに戻れる。
 
 **2 回目は制御端末を再取得できなくするため。** `setsid()` の直後、その子はセッションリーダになっており、端末デバイスを開くとそれを制御端末として獲得しうる。もう一度 fork すれば孫はセッションリーダではなくなる（コメントいわく `The second fork() ensures that grandchild is not a session, leader and thus cannot reacquire a controlling terminal.`）。最後に、chroot 前に開いておいた `/dev/null` の fd を `dup2` で 0 / 1 / 2 に被せる。
+
+```mermaid
+flowchart TB
+    A["--daemonize"] --> B["1 回目の fork<br/>親は exit(0) するので、呼び出し元は待たずに戻れる"]
+    B --> C["子で setsid()<br/>親の PGID を継承するがリーダではないので必ず成功する"]
+    C --> D["2 回目の fork<br/>孫はセッションリーダではなくなる"]
+    D --> E["chroot 前に開いておいた /dev/null の fd を<br/>dup2 で 0 / 1 / 2 に被せる"]
+    N1["setsid(2) は呼び出し元がプロセスグループリーダだと EPERM で失敗する<br/>シェルから起動された jailer はリーダである可能性が高い"]
+    N1 -.-> B
+    N2["セッションリーダは端末デバイスを開くと<br/>それを制御端末として獲得しうる"]
+    N2 -.-> D
+```
 
 `--new-pid-ns` があると `clone(NULL, CLONE_NEWPID)` する。libc の `clone()` ラッパは NULL スタックを受け付けないので生 syscall を呼ぶ。子は新しい PID namespace の PID 1、すなわち init になる。ここにも配慮がある。PID namespace の init には、祖先 namespace からのシグナルがハンドラを登録している場合しか届かない。Firecracker は `SIGHUP` にハンドラを持つので、jailer がセッションリーダのまま終了すると、そのセッションに飛ぶ `SIGHUP` を init である Firecracker が受けてしまう。そこで jailer がセッションリーダだった場合は子側で `setsid()` を呼び、Firecracker を新セッションのリーダにしてから `exec` する。
 

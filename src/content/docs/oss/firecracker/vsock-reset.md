@@ -12,18 +12,25 @@ sidebar:
 
 virtio-vsock はゲストとホストの間のソケット通信路で、スナップショット時点では複数の接続が確立している可能性がある。Firecracker はこれを保存しない。保存しないどころか、**スナップショットを取る直前にゲストへ「トランスポートがリセットされた」というイベントを送り、既存接続を明示的に破棄させる**。
 
-```
-  CreateSnapshot
-      ├─ 各 virtio デバイスの prepare_save()
-      │      └─ vsock: VIRTIO_VSOCK_EVENT_TRANSPORT_RESET を event queue へ
-      │                pending_event_ack = true / used ring 更新 / 割り込み
-      ├─ デバイス状態を保存（接続情報は入っていない）
-      └─ メモリを保存
-
-  Resume（元 VM でも復元先 VM でも）
-      └─ kick(): pending_event_ack なら event queue を再度シグナル
-             └─ ゲストのドライバ: 既存接続を全て close
-                                  listen ソケットは残す（CID だけ更新）
+```mermaid
+flowchart TB
+    subgraph cs["CreateSnapshot"]
+        direction TB
+        A["各 virtio デバイスの prepare_save()"]
+        B["vsock: VIRTIO_VSOCK_EVENT_TRANSPORT_RESET を event queue へ<br/>pending_event_ack = true / used ring 更新 / 割り込み"]
+        C["デバイス状態を保存 — 接続情報は入っていない"]
+        D["メモリを保存"]
+        A --> B --> C --> D
+    end
+    subgraph rs["Resume — 元 VM でも復元先 VM でも同じ"]
+        direction TB
+        E["kick(): pending_event_ack なら event queue を再度シグナルする"]
+        F["ゲストのドライバが既存接続を全て close<br/>listen ソケットは残し、CID だけ更新する"]
+        E --> F
+    end
+    cs --> rs
+    N["イベントを送るのは保存の直前であって復元時ではない<br/>= 元の VM も resume した時点で接続が切れる<br/>「取った VM と復元した VM で挙動が違う」という分岐が消える"]
+    N -.-> B
 ```
 
 イベントを送るのは保存の直前であって復元時ではない。したがってスナップショットを取った **元の VM** も、resume した時点で接続が切れる。ドキュメントは「スナップショット作成が現在の microVM に与える影響」として、vsock デバイスがリセットされることを明記している。

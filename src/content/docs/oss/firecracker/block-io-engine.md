@@ -22,9 +22,15 @@ Firecracker の virtio-block は、バッキングファイルへの I/O を `Fi
 
 この 2 つを 1 本の API で扱うために、Firecracker は戻り値の型に「実行したのか、投入したのか」という区別を持ち込んだ。
 
-```
-FileEngineOk::Executed(RequestOk { req, count })  // もう終わった。すぐ used リングに入れてよい
-FileEngineOk::Submitted                           // 投入しただけ。完了は後で CQ から拾う
+```mermaid
+flowchart LR
+    R["Request::process が read / write / flush を呼ぶ"] --> FE{"FileEngine は"}
+    FE -- "Sync" --> S["seek + read_exact_volatile / write_all_volatile<br/>flush + sync_all<br/>呼び出しの中で完了する"]
+    S --> SE["FileEngineOk::Executed(RequestOk)<br/>もう終わった。すぐ used リングに入れてよい"]
+    FE -- "Async" --> A["io_uring の SQ に積むだけ<br/>ブロックしない"]
+    A --> AS["FileEngineOk::Submitted<br/>投入しただけ。完了は後で CQ から拾う"]
+    SE --> C["呼び出し側はこの 2 分岐を書くだけで<br/>どちらのエンジンが動いているかを知らない"]
+    AS --> C
 ```
 
 `read` / `write` / `flush` の 3 つとも、この同じ enum を返す。呼び出し側の `Request::process` はこの enum を `ProcessingResult` に写し替えるだけで、どちらのエンジンが動いているかを一切知らない。
@@ -35,22 +41,21 @@ Async エンジンには Sync にない失敗モードがある。submission que
 
 Firecracker はこれを `is_throttling_err()` という述語で他のエラーから分離し、専用の経路に流す。
 
-```
-process_queue()
-  ├ descriptor chain を pop
-  ├ Request::process(...)
-  │    └ push → Err(FullCQueue | SQueue(FullQueue))
-  │         → ProcessingResult::Throttled
-  ├ queue.undo_pop()            ← avail リングに descriptor を戻す
-  ├ is_io_engine_throttled = true
-  └ break                       ← キューの処理をここで打ち切る
-
-（以後 PROCESS_QUEUE イベントが来ても process_virtio_queues を呼ばず、
-  io_engine_throttled_events メトリクスを増やすだけ）
-
-process_async_completion_event()   ← io_uring の completion eventfd が発火
-  ├ CQ を全部 pop して used リングに積む
-  └ is_io_engine_throttled なら false に戻して process_queue(0) を再開
+```mermaid
+flowchart TB
+    A["process_queue()"] --> B["descriptor chain を pop"]
+    B --> C["Request::process(...)"]
+    C --> D{"push の結果は"}
+    D -- "Ok" --> E["Executed なら used リングへ<br/>Submitted なら何もしない"]
+    E --> B
+    D -- "Err(FullCQueue / SQueue の FullQueue)<br/>= is_throttling_err()" --> F["ProcessingResult::Throttled"]
+    F --> G["queue.undo_pop() で descriptor を avail リングに戻す<br/>エラーステータスは書かない"]
+    G --> H["is_io_engine_throttled = true"]
+    H --> I["break — キューの処理をここで打ち切る"]
+    I --> J["以後 PROCESS_QUEUE が来ても処理せず<br/>io_engine_throttled_events メトリクスを増やすだけ"]
+    K["process_async_completion_event()<br/>io_uring の completion eventfd が発火"] --> L["CQ を全部 pop して used リングに積む"]
+    L --> M["is_io_engine_throttled を false に戻し<br/>process_queue(0) を再開する"]
+    J -.-> K
 ```
 
 `undo_pop()` で descriptor chain を avail リングに戻しているのがポイントで、ゲストから見ると単に「まだ処理されていない」状態に留まる。エラーステータスは書かれない。これは [rate limiter](../rate-limiter/) が発火したときの扱いとまったく同じ形をしている。違うのは、再開のトリガーが rate limiter の timerfd ではなく io_uring の completion eventfd だという点だけだ。

@@ -16,21 +16,20 @@ Linux のコンテナは、新しい実行形態ではない。ふつうのプ�
 
 重要なのは、これらが全部**同じカーネルの中の機能**だという点だ。コンテナの中で `open(2)` を呼べば、ホストと同じカーネルの同じ `sys_open` に飛び込む。
 
-```
-        コンテナ A          コンテナ B
-       +-----------+      +-----------+
-       | プロセス  |      | プロセス  |
-       +-----------+      +-----------+
-             |                  |
-     syscall |          syscall |
-             v                  v
-    +-------------------------------------+
-    |   ホストの Linux カーネル (1 つ)    |  <- 分離の境界はこの中の
-    |   namespace / cgroup / seccomp      |     チェックコードでできている
-    +-------------------------------------+
-    +-------------------------------------+
-    |            ハードウェア             |
-    +-------------------------------------+
+```mermaid
+flowchart TB
+    subgraph CA["コンテナ A"]
+        PA["プロセス"]
+    end
+    subgraph CB["コンテナ B"]
+        PB["プロセス"]
+    end
+    PA -- "syscall" --> K
+    PB -- "syscall" --> K
+    K["ホストの Linux カーネル (1 つ)<br/>namespace / cgroup / seccomp"]
+    K --> HW["ハードウェア"]
+    N["分離の境界は、このカーネル内に<br/>散らばった判定コードの集合"]
+    N -.-> K
 ```
 
 分離の実体は、カーネルコードの中に散らばった「このプロセスはこの namespace に属しているから、この資源は見せない」という判定の集合だ。判定の数だけ、判定を間違える可能性がある。
@@ -58,23 +57,22 @@ Firecracker の CHARTER.md は、この状況を「顧客のワークロード�
 
 仮想マシン（VM）の分離境界は、まったく別の場所にある。
 
-```
-        VM A                    VM B
-   +-------------+        +-------------+
-   | ゲスト      |        | ゲスト      |
-   | プロセス    |        | プロセス    |
-   +-------------+        +-------------+
-   | ゲスト      |        | ゲスト      |
-   | カーネル A  |        | カーネル B  |  <- カーネルが VM ごとに別物
-   +-------------+        +-------------+
-         |                      |
-         |  VM exit             |  VM exit
-         v                      v
-   +---------------------------------------+
-   |  ハードウェア (VT-x / EPT)            |  <- 分離の境界はここ
-   +---------------------------------------+
-   |  ホストカーネル (KVM) + VMM プロセス  |
-   +---------------------------------------+
+```mermaid
+flowchart TB
+    subgraph VA["VM A"]
+        direction TB
+        PA["ゲストプロセス"] -- "syscall" --> GKA["ゲストカーネル A"]
+    end
+    subgraph VB["VM B"]
+        direction TB
+        PB["ゲストプロセス"] -- "syscall" --> GKB["ゲストカーネル B"]
+    end
+    GKA -- "VM exit" --> HW
+    GKB -- "VM exit" --> HW
+    HW["ハードウェア (VT-x / EPT)"]
+    HW --> HK["ホストカーネル (KVM)<br/>+ VMM プロセス (Firecracker)"]
+    N["分離の境界はここ<br/>ゲストの syscall はホストカーネルに届かない"]
+    N -.-> HW
 ```
 
 ゲストの中で `open(2)` を呼んでも、ホストカーネルには届かない。ゲストカーネルの中で完結する。ゲストが特権命令を実行しようとした瞬間、CPU がそれを止めてホスト側に制御を返す（これを VM exit と呼ぶ。詳しくは[次のページ](../hardware-virtualization/)）。
@@ -181,6 +179,24 @@ pub struct PortIODeviceManager {
 [`docs/design.md#L71-L79`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/docs/design.md#L71-L79)
 
 1 プロセス = 1 microVM。プロセスの中には API スレッド、VMM スレッド、そして vCPU 数だけの vCPU スレッドがある。vCPU スレッドは KVM が作り、`KVM_RUN` のループを回す。この「KVM_RUN のループ」がこの章の中心で、[kvm-run-loop](../kvm-run-loop/) で詳しく見る。
+
+```mermaid
+flowchart TB
+    subgraph P["Firecracker プロセス = 1 microVM"]
+        direction TB
+        API["API スレッド<br/>HTTP を受け付ける"]
+        VMM["VMM スレッド<br/>デバイスとイベントループ"]
+        V0["vCPU スレッド 0<br/>KVM_RUN ループ"]
+        V1["vCPU スレッド 1<br/>KVM_RUN ループ"]
+        API -- "設定・起動要求" --> VMM
+        VMM -- "生成・停止" --> V0
+        VMM -- "生成・停止" --> V1
+    end
+    V0 -- "ioctl(KVM_RUN)" --> KVM["/dev/kvm"]
+    V1 -- "ioctl(KVM_RUN)" --> KVM
+    N["プロセスが VM の生存期間そのもの<br/>殺せば VM は消える"]
+    N -.-> P
+```
 
 そして同じ docs/design.md は、脅威モデルをこう置いている。
 

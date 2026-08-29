@@ -18,13 +18,15 @@ let vm_fd = kvm_fd.create_vm()?;
 
 Firecracker はそう書いていない。**最大 5 回リトライするループになっている。** リトライ条件は `errno == EINTR` のときだけである。
 
-```
-attempt 1 ──> EINTR ──> 1us sleep ──┐
-attempt 2 ──> EINTR ──> 2us sleep ──┤
-attempt 3 ──> EINTR ──> 4us sleep ──┤ 合計 15us
-attempt 4 ──> EINTR ──> 8us sleep ──┤
-attempt 5 ──> EINTR ──> あきらめてエラー返却
-             Ok(fd) ──> break
+```mermaid
+flowchart TB
+    S["KVM_CREATE_VM を呼ぶ"] --> R{"返り値は"}
+    R -- "Ok(fd)" --> OK["vm fd を得て次へ"]
+    R -- "EINTR かつ attempt < 5" --> W["2 の (attempt-1) 乗 マイクロ秒 sleep<br/>1us → 2us → 4us → 8us、合計 15us"]
+    W --> LOG["info! で「何回目が EINTR だったか」を残す"]
+    LOG --> S
+    R -- "EINTR で 5 回目" --> ERR["あきらめて VmError::CreateVm<br/>上位のリトライ主体に任せる"]
+    R -- "EINTR 以外 (ENOMEM / EPERM など)" --> ERR2["1 回も再試行せずエラー"]
 ```
 
 ### なぜ EINTR が返るのか

@@ -63,6 +63,18 @@ Guest-boot-time =  95214 us 95 ms,  41230 CPU us 41 CPU ms
 
 だから起動時間は「同じマシン上で 2 つのリビジョンを交互に走らせて統計的に比較する」という形（[A/B テスト](../ab-testing/)）に移されている。SPECIFICATION.md の数値は「本番相当のハードウェア上での約束」であり、CI が守るのは「その約束を壊す方向の回帰がないこと」である。この 2 つは別物で、後者だけが自動化できる。
 
+```mermaid
+flowchart TB
+    S["SPECIFICATION.md に並ぶ数値"]
+    S --> M["メモリオーバーヘッド 5 MiB<br/>測定値の分散が小さい"]
+    S --> B["起動 125 ms / API 8 CPU ms<br/>測定値の分散が大きい"]
+    S --> P["CPU 性能 / ネットワーク /<br/>ストレージ / レイテンシ"]
+    M --> M2["memory cop<br/>全機能テストに既定で常駐し 10 ms 周期でサンプル<br/>閾値超過で例外 = ハード閾値"]
+    B --> B2["boot timer 疑似デバイス /<br/>process_startup_time_cpu_us メトリクス"]
+    B2 --> B3["CloudWatch に送り、pipeline_perf.py で<br/>変更前と変更後のリビジョンを A/B 比較"]
+    P --> P2["integration test pending<br/>守れていないことを文書に書いてある"]
+```
+
 ### 脚注に書かれた限界
 
 SPECIFICATION.md には脚注が 2 つある。どちらも「この数値の読み方を間違えるな」という注意である。
@@ -190,6 +202,25 @@ impl BusDevice for BootTimer {
 ```
 
 つまり測定区間は「InstanceStart を受けて microVM の組み立てを始めた瞬間 → ゲストのユーザ空間が MMIO に `123` を書いた瞬間」であり、SPECIFICATION.md の定義とそのまま一致する。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as API スレッド
+    participant V as VMM スレッド
+    participant BT as boot timer 疑似デバイス
+    participant G as ゲスト
+
+    A->>V: InstanceStart
+    Note over V: request_ts = TimestampUs::default()<br/>ここが測定区間の始点
+    V->>BT: 最初のデバイスとして attach<br/>MMIO アドレスを固定するため
+    V->>G: 組み立てを終えて resume
+    G->>G: カーネルが起動し、ユーザ空間の init が走る
+    G->>BT: MMIO のオフセット 0 に 1 バイト 123 を書く
+    Note over BT: ゲストから見れば movb 1 命令 + VM exit 1 回<br/>測定オーバーヘッドはマイクロ秒オーダー
+    BT->>BT: now - request_ts をログに出す
+    Note over BT: Guest-boot-time = 95214 us 95 ms,<br/>41230 CPU us 41 CPU ms
+```
 
 デバイスの登録場所にも制約がある（[`src/vmm/src/builder.rs#L221-L226`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/builder.rs#L221-L226)）。
 

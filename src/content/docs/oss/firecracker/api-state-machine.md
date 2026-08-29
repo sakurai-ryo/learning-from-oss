@@ -19,29 +19,16 @@ Firecracker の microVM には、はっきりした 2 つのフェーズがあ�
 
 多くの実装なら、`enum State { PreBoot, Running }` のようなフィールドを持ち、各ハンドラの先頭で `if state != PreBoot { return Err(...) }` を書く。Firecracker はそうしていない。**HTTP リクエストをまず単一の `VmmAction` enum に潰し、その enum に対する match 式を 2 本用意して、片方を pre-boot、片方を post-boot の「できることの全集合」とした。**
 
-```
-HTTP request (Unix domain socket)
-        │
-        │  TryFrom<&Request> for ParsedRequest
-        │    match (method, path, body) { ... }
-        ▼
-   VmmAction  (単一の enum。約 40 variant)
-        │
-        │  mpsc::Sender<Box<VmmAction>> + eventfd
-        ▼
-  ┌─────────────────────────────┐
-  │ VMM スレッド                 │
-  │                             │
-  │  起動前:                     │
-  │    PrebootApiController      │
-  │      ::handle_preboot_request│  match request { ... }
-  │                             │
-  │  ── StartMicroVm / LoadSnapshot でフェーズ遷移 ──
-  │                             │
-  │  起動後:                     │
-  │    RuntimeApiController      │
-  │      ::handle_request        │  match request { ... }
-  └─────────────────────────────┘
+```mermaid
+flowchart TB
+    A["HTTP request — Unix ドメインソケット"] --> B["ParsedRequest への変換<br/>match (method, path, body) の 1 本"]
+    B --> C["VmmAction — 単一の enum、約 40 variant"]
+    C --> D["mpsc::Sender と eventfd で VMM スレッドへ<br/>API スレッドは応答が来るまでブロックする"]
+    D --> E["起動前: PrebootApiController::handle_preboot_request<br/>match request の 1 本目"]
+    E -- "StartMicroVm / LoadSnapshot でフェーズ遷移" --> F["起動後: RuntimeApiController::handle_request<br/>match request の 2 本目"]
+    N["どちらの match もワイルドカードの腕を持たない<br/>= アクションを 1 つ足すと両方がコンパイルエラーになり、<br/>「起動前に許すか、起動後に許すか」を必ず答えさせられる"]
+    N -.-> E
+    N -.-> F
 ```
 
 `VmmAction` は非網羅的 (`#[non_exhaustive]`) ではない普通の enum で、2 つの match はどちらもワイルドカード `_ =>` を持たない。だから **新しいアクションを 1 つ追加すると、両方の match がコンパイルエラーになる。** 追加した人は「これは起動前に許すのか、起動後に許すのか、両方か」を必ず答えさせられる。答えを書き忘れることができない。
@@ -69,6 +56,32 @@ HTTP request (Unix domain socket)
 - `LoadSnapshot` — [スナップショットから復元](../restore-from-file/)する
 
 どちらも成功すると `PrebootApiController::built_vmm` が `Some` になり、pre-boot ループが抜けて `RuntimeApiController` に切り替わる。
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    P: pre-boot<br/>PrebootApiController
+    R: post-boot / Running<br/>RuntimeApiController
+    A: post-boot / Paused
+
+    [*] --> P
+    P --> P: ブート設定を触ると boot_path = true になる
+    P --> R: StartMicroVm
+    P --> R: LoadSnapshot<br/>boot_path が立っていたら拒否
+    R --> A: Pause<br/>イベントループに戻らず recv() のループへ
+    A --> R: Resume
+    R --> [*]
+    A --> [*]
+
+    note left of P
+        CreateSnapshot / Pause / Resume などは
+        OperationNotSupportedPreBoot で拒否
+    end note
+    note right of R
+        ConfigureBootSource / LoadSnapshot / ConfigureLogger などは
+        OperationNotSupportedPostBoot で拒否
+    end note
+```
 
 そしてこの 2 つは互いに排他だ。`PrebootApiController` は `boot_path: bool` というフラグを持っていて、ブート設定に触るリクエスト（`ConfigureBootSource`、`InsertBlockDevice`、`InsertNetworkDevice`、`SetBalloonDevice`、`SetVsockDevice`、`UpdateMachineConfiguration`、`SetMmdsConfiguration`、`SetEntropyDevice`、`SetMemoryHotplugDevice`、`InsertPmemDevice`）を 1 つでも処理すると `true` になる。`LoadSnapshot` は先頭で `boot_path` を見て、立っていたら `LoadSnapshotNotAllowed` で拒否する。
 

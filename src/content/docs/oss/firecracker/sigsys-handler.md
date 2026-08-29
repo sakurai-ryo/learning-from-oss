@@ -16,23 +16,21 @@ Firecracker は `SIGSYS` にハンドラを登録し、死ぬ前に次の 3 つ�
 2. `"Shutting down VM after intercepting a bad syscall (<番号>)."` をログに書く
 3. メトリクスをフラッシュしてから、専用の終了コード `148`（`FcExitCode::BadSyscall`）で `_exit`
 
-```
-許可されていない syscall
-      │  seccomp-BPF: SECCOMP_RET_TRAP
-      ▼
-カーネルが SIGSYS を当該スレッドへ配送
-      │  siginfo.si_code = SYS_SECCOMP (1) / si_syscall = 呼ばれた番号
-      ▼
-sigsys_handler()
-      ├ si_signo == num == SIGSYS を確認
-      ├ METRICS.seccomp.num_faults.store(1)
-      ├ error_unrestricted!("Shutting down VM after intercepting signal ...")
-      ├ log_sigsys_err(si_code, info)
-      │    ├ si_code != SYS_SECCOMP なら UnexpectedError で終了
-      │    └ *(info as *const i32).offset(6) から syscall 番号を読んでログ
-      └ exit_with_code(BadSyscall)
-           ├ METRICS.write()
-           └ libc::_exit(148)
+```mermaid
+flowchart TB
+    A["許可されていない syscall を呼ぶ"] --> B["seccomp-BPF が SECCOMP_RET_TRAP を返し<br/>カーネルが SIGSYS を当該スレッドへ配送する"]
+    B --> C["sigsys_handler()"]
+    C --> D{"si_signo == num == SIGSYS か"}
+    D -- "違う" --> X["UnexpectedError (終了コード 2)"]
+    D -- "合う" --> E["METRICS.seccomp.num_faults.store(1)"]
+    E --> F["error_unrestricted! でシグナル番号と si_code をログに書く"]
+    F --> G{"si_code == SYS_SECCOMP (1) か"}
+    G -- "違う" --> X
+    G -- "合う" --> H["siginfo の先頭を i32 の配列とみなし<br/>オフセット 6 = 24 バイト目から syscall 番号を読む"]
+    H --> I["Shutting down VM after intercepting a bad syscall (番号) をログへ"]
+    I --> J["exit_with_code(BadSyscall)<br/>METRICS.write() してから libc::_exit(148)"]
+    N["SI_OFF_SYSCALL は「SIGSYS が seccomp 由来である」ことを<br/>前提にしたオフセット。前提が崩れているなら読まない"]
+    N -.-> G
 ```
 
 ### syscall 番号はオフセットを手で計算して取り出す

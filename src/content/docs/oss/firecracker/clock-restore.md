@@ -21,6 +21,21 @@ sidebar:
 
 これに加えて、「時間が飛んだこと」をゲストの**ユーザ空間**へ伝えるための VMClock デバイスがある。
 
+```mermaid
+flowchart LR
+    R["スナップショットの復元<br/>= 「時間の穴」が生まれる"]
+    R --> A["TSC カウンタの刻み幅<br/>ホストが違えば周波数が違う"]
+    A --> A2["保存値との差が 250ppm を超えたら<br/>KVM_SET_TSC_KHZ で TSC スケーリングを有効にする"]
+    R --> B["kvmclock / 壁時計<br/>止まっていた分だけ遅れる"]
+    B --> B2["clock_realtime フラグで「進める」か<br/>「ずれたままにする」かを選ばせる。既定はずれたまま"]
+    R --> C["ソフトロックアップ検出<br/>「N 秒 CPU が進んでいない」と誤検出して panic する"]
+    C --> C2["pause の直後に KVM_KVMCLOCK_CTRL で<br/>「ホストに止められた」ことを通知する"]
+    R --> D["TSC deadline タイマー<br/>期限が 0 のまま保存されると二度と発火しない"]
+    D --> D2["保存時に MSR_IA32_TSC の値で埋め、<br/>MSR_IA32_TSC_DEADLINE を最後のチャンクへ移す"]
+    R --> E["ゲストのユーザ空間は<br/>自分が復元されたことを知らない"]
+    E --> E2["VMClock デバイスが disruption_marker を進めて割り込む"]
+```
+
 ### TSC 周波数は 250ppm の許容幅で判定する
 
 vCPU 状態を保存するとき、Firecracker は `KVM_GET_TSC_KHZ` でその時点の TSC 周波数を記録する。復元時は保存値とホストの現在値を比べ、差が保存値の 250ppm（百万分の 250）を超えていたら全 vCPU に `KVM_SET_TSC_KHZ` を投げて TSC スケーリングを有効にする。許容幅を設ける理由はコメントにある。TSC 周波数はブート時のキャリブレーションで決まるので同一機種でも僅かにばらつき、そのたびにスケーリングを入れても遅くなるだけだからだ。
@@ -120,6 +135,24 @@ const DEFERRED_MSRS: [u32; 1] = [
 [`src/vmm/src/arch/x86_64/vcpu.rs#L39-L47`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/arch/x86_64/vcpu.rs#L39-L47)
 
 修復と並べ替えはどちらも **保存側** で行われる。
+
+```mermaid
+flowchart LR
+    subgraph save["保存側がやること"]
+        direction TB
+        S1["fix_zero_tsc_deadline_msr()<br/>MSR_IA32_TSC_DEADLINE が 0 のエントリを<br/>MSR_IA32_TSC の最大値で埋める"]
+        S2["extract_deferred_msrs()<br/>MSR_IA32_TSC_DEADLINE を抜き出して最後のチャンクへ移す"]
+        S1 --> S2
+    end
+    subgraph restore["復元側がやること"]
+        R1["state.saved_msrs を順に KVM_SET_MSRS へ流すだけ<br/>順序の知識を一切持たない"]
+    end
+    save --> restore
+    N["KVM は TSC_DEADLINE への書き込み時に MSR_IA32_TSC を参照して<br/>タイマーを仕込むか判断する<br/>= TSC より先に DEADLINE を書くと誤判定される"]
+    N -.-> S2
+    M["順序の制約が保存時のチャンク構成として固定される<br/>= スナップショットのフォーマット自体が「この順に適用せよ」を表現している"]
+    M -.-> restore
+```
 
 ```rust title="src/vmm/src/arch/x86_64/vcpu.rs"
         Self::fix_zero_tsc_deadline_msr(&mut msr_chunks);

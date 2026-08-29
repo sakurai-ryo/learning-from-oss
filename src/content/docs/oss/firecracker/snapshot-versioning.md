@@ -32,11 +32,19 @@ Firecracker のスナップショットフォーマットには、Firecracker �
 
 ### ロード時の判定は semver 的だが、実質は完全一致
 
-```
-major が違う              -> InvalidFormatVersion で拒否
-minor が自分より大きい     -> InvalidFormatVersion で拒否
-minor が自分以下          -> 受け入れる
-patch                    -> 一切見ない
+```mermaid
+flowchart TB
+    A["スナップショットファイルをロード"] --> B{"bitcode でデシリアライズできるか"}
+    B -- "できない" --> BE["SnapshotError::Bitcode<br/>bincode 時代のファイル / 構造体の変更 / 破損 を区別しない<br/>「古いフォーマットのサポートは対象外」"]
+    B -- "できる" --> C{"magic は一致するか"}
+    C -- "しない" --> CE["InvalidMagic<br/>アーキが違えばバージョン以前に拒否"]
+    C -- "する" --> D{"major は一致するか"}
+    D -- "しない" --> DE["InvalidFormatVersion<br/>エラーに実際のバージョンを載せる"]
+    D -- "する" --> E{"minor は自分以下か"}
+    E -- "大きい" --> DE
+    E -- "以下" --> F["受け入れる。patch は一切見ない"]
+    N["MINOR は使われていない<br/>bitcode が後方互換な変更を許さないので、<br/>MINOR で表現できる変更 (フィールド追加) がそもそも存在しない<br/>= 実際に通るのは完全一致だけ"]
+    N -.-> F
 ```
 
 形としては「同じ MAJOR の範囲内で、自分が知っている MINOR まで読める」という普通の semver 互換ルールになっている。ただし MINOR が使われていない以上、実際に通るのは「MAJOR が一致し、MINOR が 0」つまり完全一致だけである。**枠組みだけ将来のために用意してあり、今は使っていない。**

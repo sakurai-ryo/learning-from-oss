@@ -12,20 +12,33 @@ sidebar:
 
 microVM を組み立てるとき、[割り込みコントローラ](../interrupt-delivery/)を作る操作と vCPU を作る操作は、どちらも「VM fd に対する ioctl」である。だがこの 2 つには **アーキテクチャごとに逆向きの順序制約** がある。
 
-```
-x86_64:  KVM_CREATE_IRQCHIP ─> KVM_CREATE_PIT2 ─> KVM_CREATE_VCPU x N
-aarch64: KVM_CREATE_VCPU x N ─> KVM_CREATE_DEVICE(GIC)
+```mermaid
+flowchart LR
+    subgraph x86["x86_64 — 割り込みコントローラが先"]
+        direction LR
+        X1["KVM_CREATE_IRQCHIP<br/>PIC マスタ / PIC スレーブ / IOAPIC"] --> X2["KVM_CREATE_PIT2<br/>8254 PIT + スピーカーのダミー"]
+        X2 --> X3["KVM_CREATE_VCPU を N 回<br/>各 vCPU に LAPIC が付く"]
+    end
+    subgraph arm["aarch64 — vCPU が先"]
+        direction LR
+        A1["KVM_CREATE_VCPU を N 回"] --> A2["KVM_CREATE_DEVICE (GIC)<br/>先に作ると KVM_CREATE_VCPU が失敗する"]
+    end
 ```
 
 x86_64 では割り込みコントローラが先。aarch64 では vCPU が先。**どちらかに寄せることはできない。** カーネルがそう決めているからだ。
 
 素朴に書けば `create_vcpus()` の中を `#[cfg(target_arch = ...)]` で分岐させることになる。Firecracker はそうせず、**アーキ非依存の `create_vcpus()` に 2 つのフック点を開けて、各アーキがどちらか片方だけを埋める**構造にした。
 
-```
-KvmVm::create_vcpus(vcpu_count)          <- アーキ非依存 (vstate/vm.rs)
-  ├─ self.arch_pre_create_vcpus(n)       <- x86_64: setup_irqchip() / aarch64: Ok(())
-  ├─ for i in 0..n { Vcpu::new(i, ...) }
-  └─ self.arch_post_create_vcpus(n)      <- x86_64: Ok(())        / aarch64: setup_irqchip(n)
+```mermaid
+flowchart TB
+    C["KvmVm::create_vcpus(vcpu_count)<br/>アーキ非依存 (vstate/vm.rs)"]
+    C --> P["arch_pre_create_vcpus(n)"]
+    P --> L["for i in 0..n → Vcpu::new(i, ...)"]
+    L --> Q["arch_post_create_vcpus(n)"]
+    P -. "x86_64" .-> PX["setup_irqchip()"]
+    P -. "aarch64" .-> PA["Ok(()) — 空"]
+    Q -. "x86_64" .-> QX["Ok(()) — 空"]
+    Q -. "aarch64" .-> QA["setup_irqchip(n)"]
 ```
 
 結果として、**「順序制約がある」という事実そのものが型（トレイトではなく、アーキごとに定義される同名メソッド）として残る。** アーキを追加する人は、2 つのフックのどちらに置くかを必ず選ばされる。順序を間違えたコードを書くことは可能だが、順序という論点が存在することは見落としようがない。

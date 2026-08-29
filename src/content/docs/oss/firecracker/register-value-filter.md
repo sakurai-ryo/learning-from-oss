@@ -27,14 +27,17 @@ value  : 介入するビットに書き込む値
 
 そして JSON 上ではこの 2 つを 1 本の文字列に畳む。
 
-```
-filter = 0b1111_0000
-value  = 0b0101_0000
-                        ↓
-             "0b0101xxxx"
-              ││└┴┴┴─ filter が 0 のビットは 'x' (触らない)
-              │└──── filter が 1 で value が 1 なら '1'
-              └───── filter が 1 で value が 0 なら '0'
+```mermaid
+flowchart LR
+    subgraph inner["内部表現 — 2 つの整数"]
+        direction TB
+        F["filter = 0b1111_0000<br/>どのビットに介入するか"]
+        V["value = 0b0101_0000<br/>介入するビットに書き込む値"]
+    end
+    inner -- "Serialize" --> S["外部表現 (JSON)<br/>0b0101xxxx"]
+    S -- "Deserialize" --> inner
+    S --- L["filter=1 かつ value=1 → 文字 1<br/>filter=1 かつ value=0 → 文字 0<br/>filter=0 → 文字 x = 触らない"]
+    inner --> A["apply(v) = (v & !filter) | value<br/>ループも分岐もない 1 行"]
 ```
 
 `x` が「触らない」を表す。0 と 1 と x の 3 文字だけからなる、ビット幅と同じ長さの文字列。これだけの DSL だ。
@@ -201,6 +204,15 @@ pub enum CpuConfigurationError {
 ([src/vmm/src/cpu_config/x86_64/mod.rs#L216-L221](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/cpu_config/x86_64/mod.rs#L216-L221))
 
 `RegisterValueFilter` は「立てる」もできるので、既存の leaf の中で存在しない機能のビットを 1 にすることはできる。だが leaf そのものを作り出すことはできない。**エントリの存在は KVM が決め、その中身をテンプレートが決める**、という分担になっている。
+
+```mermaid
+flowchart TB
+    K["KVM_GET_SUPPORTED_CPUID / KVM_GET_MSRS<br/>= 適用元。エントリの存在は KVM が決める"] --> M["テンプレートの modifier を 1 件ずつ見る"]
+    M --> Q{"対象の leaf / MSR アドレスが<br/>適用元に存在するか"}
+    Q -- "しない" --> E["CpuidFeatureNotSupported /<br/>MsrNotSupported で起動を失敗させる<br/>= 無い leaf を生やすことはできない"]
+    Q -- "する" --> A["bitmap.apply(現在値) で部分書き換え<br/>= 中身はテンプレートが決める"]
+    A --> W["KVM_SET_CPUID2 / KVM_SET_MSRS"]
+```
 
 ### JSON 側の見え方
 

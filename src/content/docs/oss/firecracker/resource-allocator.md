@@ -15,13 +15,16 @@ sidebar:
 1. **割り当て** — デバイスを作るときに、使うアドレス範囲と割り込み番号を決める → `ResourceAllocator`
 2. **解決** — [VM exit](../kvm-run-loop/) で来たアドレスから、そのアドレスを持つデバイスを引く → `Bus`
 
-```
-             ┌──────────────────────────────────────────┐
-             │ VmCommon                                 │
-             │  resource_allocator: Mutex<Resource...>  │ ← 割り当て
-             │  mmio_bus:           Arc<Bus>            │ ← 解決 (MMIO)
-             └──────────────────────────────────────────┘
-KvmVm (x86_64)  pio_bus:            Arc<Bus>              ← 解決 (PIO)
+```mermaid
+flowchart TB
+    subgraph vc["VmCommon — アーキ非依存"]
+        direction TB
+        RA["resource_allocator (Mutex で保護)<br/>= 割り当て。VMM スレッドが起動時に数十回"]
+        MB["mmio_bus (Arc)<br/>= 解決。vCPU スレッドが VM exit のたび、秒間数万回"]
+    end
+    subgraph kv["KvmVm — x86_64 固有"]
+        PB["pio_bus (Arc)<br/>= 解決 (PIO)<br/>ポート I/O は x86 にしかないので<br/>アーキ非依存の VmCommon には置かない"]
+    end
 ```
 
 **PIO バスは x86_64 の `KvmVm` 側にある。** ポート I/O は x86 にしかないので、アーキ非依存の `VmCommon` には置かれていない。
@@ -96,6 +99,21 @@ MMIO デバイスを 1 つ足すときの流れが [`src/vmm/src/device_manager/
 割り込み 1 本と 4KiB を取り、`MMIODeviceInfo` にまとめる。この型は **`Serialize` を導出している**（[`#L66-L75`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/device_manager/mmio.rs#L66-L75)）。割り当て結果が[スナップショット](../snapshot-format/)に入り、復元時に同じアドレスと GSI が再現される。ゲストのカーネルはこのアドレスを覚えているので、ずれると動かない。
 
 取った範囲は続けて `vm.common.mmio_bus.insert(...)` で `Bus` に登録される（[`#L216-L220`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/device_manager/mmio.rs#L216-L220)）。固定アドレスのデバイスはアロケータを通らず、boot timer は `MMIODeviceInfo { addr: BOOT_DEVICE_MEM_START, len: MMIO_LEN, gsi: None }` を手で組み立てて `insert()` する（[`#L367-L393`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/device_manager/mmio.rs#L367-L393)）。PIO のレガシーデバイスも定数を直接 `pio_bus.insert()` に渡す（[`src/vmm/src/device_manager/legacy.rs#L54-L66`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/device_manager/legacy.rs#L54-L66)）。**`Bus` から見れば固定と動的の区別は無い。**
+
+```mermaid
+flowchart TB
+    A["デバイスを作る<br/>VMM スレッド、起動時に数十回"] --> B["ResourceAllocator<br/>GSI を 1 本 + MMIO32 を 4KiB"]
+    B --> C["MMIODeviceInfo (addr, len, gsi)<br/>Serialize を導出 → スナップショットに入り<br/>復元時に同じアドレスと GSI が再現される"]
+    C --> D["Bus::insert(範囲, デバイス)<br/>重なりを弾いてから BTreeMap へ"]
+    FIX["固定アドレスのデバイス<br/>boot timer / COM1 / i8042"] -- "アロケータを通らず直接" --> D
+
+    E["ゲストが addr に MMIO アクセス<br/>vCPU スレッド、秒間数万回"] --> F["VM exit → mmio_bus.read / write(addr)"]
+    F --> G["range(..=addr).next_back()<br/>addr 以下で最大の base を取る。O(log n)"]
+    G --> H{"addr が range.end() 以下か"}
+    H -- "はい" --> I["offset = addr - base を渡してデバイスへ<br/>デバイスは自分の絶対アドレスを知らない"]
+    H -- "いいえ" --> J["warn! を出して Handled を返す<br/>read は 0。デバイス探索で VM を落とさない"]
+    D -.-> G
+```
 
 一方で `system_memory` からの払い出しは `Bus` に登録されない。MPTable（[`src/vmm/src/arch/x86_64/mptable.rs#L126-L129`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/arch/x86_64/mptable.rs#L126-L129)）と ACPI テーブル（[`src/vmm/src/acpi/mod.rs#L63-L66`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/acpi/mod.rs#L63-L66)）は**デバイスではなくゲストメモリに書くデータ構造**なので、場所の予約だけで足りる。
 

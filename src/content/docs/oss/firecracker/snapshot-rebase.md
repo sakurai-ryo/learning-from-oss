@@ -27,9 +27,18 @@ sidebar:
 
 同じページが複数のレイヤーで dirty になっていれば、後のレイヤーの内容が正しい。rebase は単純な上書きなので、順序を間違えれば古い内容が新しい内容を潰す。ドキュメントもこれを明記している。
 
-```
- base ← layer1 ← layer2 ← layer3    OK（作成順）
- base ← layer3 ← layer1             NG（layer1 が layer3 を上書きする）
+```mermaid
+flowchart TB
+    subgraph ok["OK — 作成順に適用する"]
+        direction LR
+        A1["base"] --> A2["layer1"] --> A3["layer2"] --> A4["layer3"]
+    end
+    subgraph ng["NG — 順序を違えると layer1 が layer3 を上書きする"]
+        direction LR
+        B1["base"] --> B2["layer3"] --> B3["layer1"]
+    end
+    N["レイヤーに世代番号が入っていないので、ツールは順序違反を検出できない<br/>= 制約はフォーマットではなくドキュメントで担保されている"]
+    N -.-> ng
 ```
 
 そして「最後に載せたレイヤーと同じ `/snapshot/create` 呼び出しで作られた VM 状態ファイル」を使う必要がある。メモリファイルと状態ファイルは別々に生成されるので、両者の対応は利用者が守る前提になっている。
@@ -79,6 +88,20 @@ sidebar:
 [`src/snapshot-editor/src/edit_memory.rs#L54-L103`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/snapshot-editor/src/edit_memory.rs#L54-L103)
 
 注目すべきは `cursor` の扱いだ。`sendfile64` の第 3 引数は入力側オフセットへのポインタで、カーネルが転送したぶんだけ進めてくれる。だから同じ変数を「次に `seek_data` を始める位置」と「入力オフセット」の両方に使い回せる。ホールに当たったら `seek_data` が次のデータ位置まで飛ばすので、ホールは自動的にスキップされる。`seek_hole` が `None` を返す（＝末尾までデータが続く）場合はファイルサイズを終端に使う。
+
+```mermaid
+flowchart TB
+    A["cursor = 0"] --> B["diff_file.seek_data(cursor)<br/>次の実データ位置を探す"]
+    B --> C{"見つかったか"}
+    C -- "None = もう実データがない" --> Z["終了"]
+    C -- "見つかった" --> D["diff_file.seek_hole(block_start)<br/>そのブロックの終端を求める<br/>None ならファイルサイズを終端にする"]
+    D --> E["base_file.seek(cursor) してから<br/>sendfile64 で block_end - cursor バイトを転送する"]
+    E --> F{"cursor が block_end に届いたか"}
+    F -- "まだ = 部分転送だった" --> E
+    F -- "届いた" --> B
+    N["sendfile64 の第 3 引数は入力側オフセットへのポインタで、<br/>カーネルが転送したぶんだけ進めてくれる<br/>= 同じ cursor を「次の探索開始位置」と「入力オフセット」に使い回せる"]
+    N -.-> E
+```
 
 非推奨の `rebase-snap` にある同名関数。
 

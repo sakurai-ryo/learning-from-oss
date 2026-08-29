@@ -74,6 +74,16 @@ Firecracker はこれに対して、絶対値を捨てて **PR の前後で変�
 
 `test_runner` は「作業ディレクトリのパス」と「これは A 側か」の 2 引数を受け取る呼び出し可能オブジェクトで、同じものが両リビジョンに対して走る。B 側は既定で現在のチェックアウトをそのまま使うので、clone は 1 回で済む。A 側の既定リビジョン `DEFAULT_A_REVISION` は Buildkite が渡す PR のターゲットブランチ、ローカルでは `main` である。
 
+```mermaid
+flowchart TB
+    A["git_ab_test(test_runner, comparator)"] --> B["A 側: 一時ディレクトリに git clone<br/>既定は PR のターゲットブランチ、ローカルでは main<br/>ネットワークは使わずローカルの git ルートから clone する"]
+    A --> C["B 側: 既定で現在のチェックアウトをそのまま使う<br/>= clone は 1 回で済む"]
+    B --> D["同じ test_runner を両リビジョンで走らせる<br/>実行順序は保証しない"]
+    C --> D
+    D --> E["comparator(result_a, result_b)"]
+    E --> F["cargo deny なら set_did_not_grow_comparator<br/>= 完全一致ではなく「増えていないこと」<br/>(code, advisory_id, crate) の 3 つ組に正規化してから集合にする"]
+```
+
 clone はネットワークを使わない。`git_clone` はローカルの git ルート（`git rev-parse --show-toplevel`）から clone し、デタッチド HEAD を直接チェックアウトできないので一時ブランチ `tmp-<commitish>` を作ってから消す（[`tests/framework/ab_test.py#L148-L168`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/tests/framework/ab_test.py#L148-L168)）。`@with_filelock` が付いているのは、pytest-xdist で並列実行したときに同じ clone を複数ワーカーが同時に作らないようにするためだ。
 
 なお、`git_ab_test` 自身は「実行順序を保証しない」と docstring に明記している（"Note that there are no guarantees on the order in which the two tests are run."）。順序に依存する比較を書いてはいけない、という契約である。
@@ -233,6 +243,17 @@ A/B モードで走るときは `-m ''` が渡され、`nonci` マーカーの�
 2. **値を動かせるのは自分たちだけか。** 外部のデータベース（advisory、ベースイメージ、依存の最新版）に依存するなら、絶対値は必ずいつか外部要因で落ちる。
 
 Firecracker の内訳はこの 2 軸できれいに説明できる。メモリオーバーヘッド（ばらつき小・自分たち起因）は絶対値、起動時間（ばらつき大）は A/B、脆弱性リスト（外部起因）は A/B、である。
+
+```mermaid
+flowchart TB
+    Q1{"実行環境を変えたとき、値はどれくらい動くか"}
+    Q1 -- "数割動く" --> AB["A/B — 同一マシン上で 2 リビジョンを比較する<br/>例: 起動時間、スループット、スナップショット時間"]
+    Q1 -- "数 KiB しか動かない" --> Q2{"値を動かせるのは自分たちだけか"}
+    Q2 -- "自分たちだけ" --> ABS["絶対値の閾値<br/>例: メモリオーバーヘッド 5 MiB — memory cop が常時アサートする"]
+    Q2 -- "外部のデータベースに依存する" --> AB2["A/B — 外から降ってきた指摘は<br/>A 側にも B 側にも現れて比較で消える<br/>例: cargo deny の脆弱性リスト"]
+    N["A/B の弱点: 1 回あたりの変化が閾値以下なら何回でも通る<br/>100 回の PR がそれぞれ 1% ずつ遅くしても一度も落ちない<br/>= 緩くても絶対値の上限を併置し、長期の傾向は外部メトリクスで見る"]
+    N -.-> AB
+```
 
 ### 差分方式は「ゆっくりした劣化」を検出できない
 

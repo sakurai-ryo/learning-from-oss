@@ -16,22 +16,16 @@ virtio-net の RX はこの形にならない。理由は、フレームがい�
 
 そこで Firecracker は `RxBuffers` という構造体に、ゲストから預かった空きメモリを**プールとして**まとめて保持する。
 
-```
-ゲスト                          Firecracker (RxBuffers)              ホスト
-
-RX avail リングに               parse_rx_descriptors()
-空きバッファを積む       ───▶   ┌─────────────────────────────┐
-                                │ iovec: IoVecBufferMut<256>  │
-                                │  [iov][iov][iov][iov]...    │ ◀── readv(tap_fd, iov, n)
-                                │                             │
-                                │ parsed_descriptors:         │
-                                │  VecDeque<ParsedDescriptorChain>
-                                │  {head_index, length,       │
-                                │   nr_iovecs} x N            │
-                                └─────────────────────────────┘
-                                         │ mark_used(len)
-RX used リングから      ◀────────────────┘
-フレームを取り出す              finish_frame()
+```mermaid
+flowchart LR
+    G["ゲスト<br/>RX avail リングに空きバッファを積む"] -- "parse_rx_descriptors()" --> RB
+    subgraph RB["RxBuffers"]
+        direction TB
+        IV["iovec (IoVecBufferMut、最大 256 本)<br/>複数の descriptor chain のバッファが<br/>1 本のフラットな iovec 配列として連なる"]
+        PD["parsed_descriptors (VecDeque)<br/>head_index / length / nr_iovecs<br/>= どこからどこがどの chain だったかの台帳"]
+    end
+    T["ホストの TAP"] -- "readv(tap_fd, iov, n) を 1 回<br/>コピーなしでゲストメモリへ直接" --> IV
+    RB -- "mark_used(len) → finish_frame()" --> U["RX used リング<br/>ゲストがフレームを取り出す"]
 ```
 
 `iovec` は `libc::iovec` の並びで、複数の descriptor chain のバッファが 1 本のフラットな配列として連なっている。`parsed_descriptors` は「この iovec 配列のどこからどこまでがどの chain だったか」を覚えている台帳で、中身は 3 つのフィールドしかない。
@@ -45,6 +39,22 @@ pub struct ParsedDescriptorChain {
 ```
 
 この 2 つを分けたおかげで、`readv(2)` に渡す引数（`&mut [iovec]`）をコピーなしでそのまま取り出せる。裏側のリングバッファ実装は [`IovDeque`](../iov-deque/) で、前からも後ろからも O(1) で出し入れできる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as ゲスト
+    participant RB as RxBuffers
+    participant T as TAP
+
+    G->>RB: RX avail リングに空きバッファを積む
+    RB->>RB: parse_rx_descriptors() でプールに追加<br/>小さすぎる chain は長さ 0 で used に返す
+    Note over RB: 空きが MAX_BUFFER_SIZE (65562) に満たなければ<br/>そもそも読まずに RX を止める
+    T-->>RB: readv 1 回で iovec 配列を先頭から埋める
+    RB->>RB: mark_used(bytes_written)<br/>先頭 chain から min で削りながら used 要素を書く
+    RB->>RB: header_set_num_buffers(used_heads)<br/>chain を drop する前に書かなければならない
+    RB->>G: finish_frame() で used.idx を進める<br/>rate limiter の許可が下りてから
+```
 
 ### 1 フレームが複数の chain にまたがる場合
 

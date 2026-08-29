@@ -107,6 +107,20 @@ pub struct IovDeque<const L: u16> {
 
 [`#L161-L217`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/virtio/iov_deque.rs#L161-L217)。2 回目の `mmap` は `buffer.add(pages_bytes)` を宛先に、**同じ `offset: 0`** で同じ memfd をマップする。これで 2 つの仮想範囲が同じ物理ページを指す。`MAP_SHARED` でなければ書き込みが CoW で分離してしまうので、ここは `MAP_PRIVATE` ではいけない。
 
+```mermaid
+flowchart TB
+    S1["1. memfd_create で 1 ページ分のメモリオブジェクトを作る<br/>SealShrink / SealGrow / SealSeal でサイズを固定する"]
+    S2["2. PROT_NONE の匿名 mmap で 2 ページ分の<br/>連続した仮想アドレス空間をカーネルに選ばせて予約する"]
+    S3["3. 前半ページを MAP_SHARED + MAP_FIXED で memfd の offset 0 にマップ"]
+    S4["4. 後半ページも MAP_SHARED + MAP_FIXED で<br/>同じ memfd の同じ offset 0 にマップ"]
+    S1 --> S2 --> S3 --> S4
+    S4 --> R["2 つの仮想ページが 1 枚の物理ページを指す<br/>as_slice は start から len 個をポインタ演算で返すだけで済み<br/>折り返してもコピーが起きない"]
+    N2["先に PROT_NONE で確保しておくのは、<br/>MAP_FIXED が既存マッピングを問答無用で置き換えるから<br/>= アドレス衝突を心配しなくて済む"]
+    N2 -.-> S2
+    N3["MAP_PRIVATE だと書き込みが CoW で分離してしまう"]
+    N3 -.-> S3
+```
+
 memfd 側には seal をかけている。
 
 ```rust title="src/vmm/src/devices/virtio/iov_deque.rs"

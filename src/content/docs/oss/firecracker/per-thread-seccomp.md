@@ -10,29 +10,25 @@ sidebar:
 
 Firecracker には 3 種類のスレッドがあり、seccomp フィルタも 3 つある。そして**フィルタを適用するのは、そのフィルタが課される当のスレッド自身**である。中央の「セキュリティ初期化関数」がまとめて適用するのではない。
 
-```
-                    起動                                   適用のタイミング
-─────────────────────────────────────────────────────────────────────────
-main()                                          filters = {vmm, api, vcpu}
-  │
-  ├─ fc_api スレッドを spawn ─────────────┐
-  │    ApiServer::run()                    │
-  │      apply_filter(api)  ★1  ───────────┤ HTTP サーバの listen 直前
-  │      server.start_server()             │
-  │      loop { requests() }               │
-  │                                        │
-  ├─ (メインスレッド = VMM スレッド)        │
-  │    build_microvm...()                  │
-  │      ├ KVM_CREATE_VM / メモリ確保       │  ← ここで大量の syscall が要る
-  │      ├ カーネルロード / デバイス構築     │
-  │      └ start_vcpus()                   │
-  │           └ fc_vcpu N を spawn ────────┤
-  │                Vcpu::run()             │
-  │                  apply_filter(vcpu) ★3 │ KVM_RUN の状態機械に入る直前
-  │                  loop { run_emulation }│
-  │                                        │
-  │    apply_filter(vmm)  ★2  ─────────────┘ microVM 構築の直後、
-  │    event_manager.run()                   イベントループに入る直前
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as main / VMM スレッド
+    participant A as fc_api スレッド
+    participant V as fc_vcpu N スレッド
+
+    Note over M: filters に vmm / api / vcpu の 3 つを持つ
+    M->>A: spawn
+    A->>A: ★1 apply_filter(api)<br/>HTTP サーバの listen 直前
+    A->>A: start_server() → リクエストのループ
+    M->>M: build_microvm...()<br/>KVM_CREATE_VM / メモリ確保 / カーネルロード / デバイス構築
+    Note over M: ここで大量の syscall が要る<br/>先にフィルタを入れると構築が通らない
+    M->>V: start_vcpus() で spawn
+    V->>V: シグナルハンドラ登録 → Barrier で待ち合わせ
+    V->>V: ★3 apply_filter(vcpu)<br/>KVM_RUN の状態機械に入る直前
+    V->>V: Paused から始まる状態機械のループ
+    M->>M: ★2 apply_filter(vmm)<br/>microVM 構築の直後、イベントループの直前
+    M->>M: event_manager.run()
 ```
 
 Linux の `seccomp(SECCOMP_SET_MODE_FILTER)` は、`SECCOMP_FILTER_FLAG_TSYNC` を付けない限り**呼び出しスレッドにだけ**適用される。Firecracker はフラグに 0 を渡しているので TSYNC は使っていない。つまり「各スレッドが自分で呼ぶ」のは実装の都合ではなく、スレッドごとに違うフィルタを課すための必然である。

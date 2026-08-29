@@ -42,16 +42,21 @@ virtio のデバイス側がリクエストを 1 つ完了するとき、やる�
 
 **1 つ目は、割り込みが 1 回で済むこと。** デバイスは available ring が空になるまでループし、その間 `write_used_element` + `advance_next_used` を繰り返す。ループを抜けてから `advance_used_ring_idx` を 1 回呼び、`prepare_kick` が真なら割り込みを 1 回上げる。N 個のリクエストに対して、ゲストへの通知は 1 回だ。
 
-```
-        ┌──────────────── 1 回のイベントハンドラ呼び出し ─────────────────┐
-pop ─▶ 処理 ─▶ add_used ─▶ pop ─▶ 処理 ─▶ add_used ─▶ ... ─▶ pop = None
-                  │                            │
-        used.ring[] は書かれるが used.idx はまだ動かない
-                                               │
-                             advance_used_ring_idx()  ← Release fence + idx 更新
-                                               │
-                             prepare_kick() が真なら割り込み 1 回
-        └───────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph lp["1 回のイベントハンドラ呼び出し"]
+        direction LR
+        A["pop"] --> B["処理"]
+        B --> C["add_used<br/>= write_used_element + advance_next_used"]
+        C --> A
+    end
+    lp --> D["pop が None になってループを抜ける"]
+    D --> E["advance_used_ring_idx()<br/>fence(Release) してから used.idx を更新"]
+    E --> F{"prepare_kick() が真か"}
+    F -- "真" --> G["割り込みを 1 回だけ上げる"]
+    F -- "偽" --> H["上げない"]
+    N["ループ中は used.ring[] が書かれるだけで<br/>used.idx は動かない<br/>= ゲストから見て完了は 0 件のまま"]
+    N -.-> C
 ```
 
 `used.idx` を動かすまで、ゲストから見て完了したリクエストは 0 件のままだ。だから途中の `ring[]` への書き込みは、ゲストに一切観測されない。**「書く」と「見せる」を分けたことが、そのままバッチングになっている。**
@@ -197,21 +202,26 @@ used ring に見せる側 (再掲)。
 
 対応関係はこうなる。
 
-```
-  ドライバ (ゲスト)                     デバイス (Firecracker)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as ドライバ (ゲスト)
+    participant M as リング (共有メモリ)
+    participant V as デバイス (Firecracker)
 
-  descriptor / avail.ring を書く
-        │  (write barrier)
-  avail.idx を進める  ────────────▶  avail.idx を読む (len())
-                                           │  fence(Acquire)
-                                     avail.ring / descriptor を読む
-                                           │
-                                     バッファへ書き込む
-                                     used.ring[] を書く
-                                           │  fence(Release)
-  used.idx を読む  ◀────────────────  used.idx を進める
-        │  (read barrier)
-  used.ring[] を読む
+    D->>M: descriptor と avail.ring を書く
+    Note over D: write barrier
+    D->>M: avail.idx を進める
+    V->>M: avail.idx を読む (len())
+    Note over V: fence(Acquire)
+    M-->>V: avail.ring と descriptor を読む
+    V->>V: バッファへ書き込む
+    V->>M: used.ring[] を書く (N 個ぶん、フェンスなし)
+    Note over V: fence(Release) — ここ 1 回だけ
+    V->>M: used.idx を進める
+    D->>M: used.idx を読む
+    Note over D: read barrier
+    M-->>D: used.ring[] を読む
 ```
 
 `fence(Acquire)` を `avail.idx` を読んだ**後**、`ring[]` を読む**前**に置くことで、「`idx` が N になっていると観測できたなら、ドライバが `idx` を書く前に書いた `ring[..N]` と descriptor もすべて見える」が保証される。`fence(Release)` はその鏡像で、`ring[]` への書き込みがすべて `used.idx` の更新より前に可視化される。この 2 本が対になっていないと、ゲストは「`idx` は進んでいるのに `ring[]` の中身が古い」を観測しうる。

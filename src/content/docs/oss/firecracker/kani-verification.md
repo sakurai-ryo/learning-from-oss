@@ -43,6 +43,20 @@ rate limiter の 6 個は基準 2 に対応する。[`../rate-limiter/`](../rate
 
 逆に言うと、スナップショット復元・API パーサ・seccomp フィルタ・デバイス実装本体といった、コード量としてはるかに大きい部分にはハーネスが 1 つも無い。「クリティカルな領域に絞る」は修辞ではなく、本当に絞られている。
 
+```mermaid
+flowchart LR
+    C["選定基準<br/>docs/formal-verification.md"]
+    C --> C1["基準 1: ゲストのデータを直接触るところ"]
+    C --> C2["基準 2: 従来型テストでは扱いにくいところ"]
+    C1 --> H1["virtio/queue.rs — 15 個<br/>virtqueue。descriptor table / avail / used は<br/>すべてゲストが書く"]
+    C1 --> H2["dumbo/pdu/ethernet.rs — 10 個<br/>MMDS 用 TCP/IP スタックの Ethernet フレーム解析"]
+    C1 --> H3["virtio/iovec.rs — 2 個<br/>ディスクリプタチェーンから iovec 配列への変換"]
+    C2 --> H4["rate_limiter/mod.rs — 6 個<br/>トークンバケットの時間・トークン算術"]
+    C2 --> H5["arch/x86_64/mod.rs — 1 個<br/>arch_memory_regions によるメモリ領域の分割"]
+    N["スナップショット復元 / API パーサ / seccomp / デバイス本体には<br/>ハーネスが 1 つも無い"]
+    N -.-> C
+```
+
 ## ソースコードのどこか
 
 ### ハーネスの組み立て方
@@ -76,6 +90,16 @@ fn verify_dst_mac() {
 [`src/vmm/src/dumbo/pdu/ethernet.rs#L294-L321`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/dumbo/pdu/ethernet.rs#L294-L321)
 
 3 つの道具は役割が分かれている。`kani::any()` / `any_array()` は入力の全域で、`bytes` は 1514 バイトのあらゆるビットパターンを同時に表す記号値であって具体的な 1 本のフレームではない。`kani::assume()` は探索空間を絞る述語で、ここでは「パースに成功したフレームだけ考える」。以降の証明はこの仮定が成り立つ実行にしか適用されない。`assert_eq!` は事後条件で、最後の 2 行は「`set_dst_mac` した後に `dst_mac` で読み戻すと同じバイト列になる」を任意の添字 `i` について一度に主張している。ループも 6 回の展開も要らない。
+
+```mermaid
+flowchart TB
+    A["kani::any() / any_array()<br/>入力の全域を表す記号値。具体的な 1 本ではない"] --> B["kani::assume(条件)<br/>探索空間を絞る述語<br/>削る理由は「現実に起きないから」ではなく「関数の事前条件だから」"]
+    B --> C["検証したい関数を呼ぶ"]
+    C --> D["assert! / assert_eq!<br/>事後条件。任意の添字について一度に主張できる"]
+    B --> E["kani::cover!()<br/>この行に到達する実行が少なくとも 1 つ存在することを要求する<br/>= assume を積みすぎて証明が空になるのを防ぐ安全網"]
+    N["assume が強すぎると、証明もそのぶん弱くなる<br/>保証はハーネスが置いた仮定の集合に対してのみ有効"]
+    N -.-> B
+```
 
 ハーネスの上には、何を仕様と見なしているかがコメントで置かれる。Ethernet 側はモジュール冒頭に「We consider the MMDS Network Stack spec for all postconditions in the harnesses.」があり、virtqueue 側では VirtIO 仕様の節番号がそのまま関数名になる（`verify_spec_2_6_7_2`。個別の証明の中身は [`../notification-suppression/`](../notification-suppression/) を参照）。FAQ の「Don't forget to mention the specification in your proof harness!」に対応している。
 

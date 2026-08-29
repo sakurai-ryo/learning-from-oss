@@ -21,6 +21,18 @@ sidebar:
 
 この 2 つを OR したものが「書き出すページ」になる。2 つ目が要るのは、KVM の dirty ログがゲストのページテーブル経由の書き込みしか捕捉しないからだ。VMM がホストプロセスとして直接ゲストメモリへ書く経路には KVM が関与しないので、Firecracker は書き込み予定の領域を事前に自分のビットマップへマークしておく。
 
+```mermaid
+flowchart LR
+    A["ゲスト vCPU がゲストメモリに store<br/>EPT/NPT 経由の普通の書き込み"] --> K["KVM の dirty ページログ<br/>KVM_GET_DIRTY_LOG<br/>取得と同時にクリアされる"]
+    B["VMM がホスト側からゲストメモリに書く<br/>block の io_uring 完了 / used ring の更新 / IoVecBufferMut"] --> C["Firecracker 自前の AtomicBitmap<br/>書く権利を渡す時点で mark_dirty しておく"]
+    K --> O["OR"]
+    C --> O
+    O --> W["連続する dirty ページをまとめて write_all_volatile<br/>clean なページは seek で飛ばす = スパースな穴が残る"]
+    W --> R{"書き出しは成功したか"}
+    R -- "成功" --> RS["reset_dirty() で自前ビットマップをクリアする"]
+    R -- "失敗" --> RF["store_dirty_bitmap() で KVM 側のビットを自前ビットマップへ戻す<br/>= 「dirty だった」という事実を失わない"]
+```
+
 ### KVM 側のログを有効にするかどうかは 1 つのフラグで決まる
 
 `track_dirty_pages` が true のとき、ゲストメモリ領域は `AtomicBitmap` 付きで mmap される。そしてメモリスロットを KVM へ登録するとき、**ビットマップが存在するかどうかを見て** `KVM_MEM_LOG_DIRTY_PAGES` フラグを立てる。自前ビットマップと KVM 側ログの有効・無効は連動している。
@@ -45,6 +57,18 @@ sidebar:
 そこで Firecracker は、tracking を有効にしていない VM に対しても Diff スナップショットを許す。このとき dirty ビットマップの代わりに `mincore(2)` を使う。mincore は「そのページがコアに載っているか（ページキャッシュにあり、マイナーフォールトだけで解決できるか）」をページごとに 1 バイトで返す syscall だ。触られたページは常駐しているので、**書かれたページの集合は、常駐しているページの集合に含まれる**。つまり over-approximation になる。read しかしていないページも dirty 扱いで書き出されるので、スナップショットは大きくなるが、内容としては正しい。
 
 ただしこれは **swap が無効な場合に限る**。書き込まれたページが swap out されていると mincore はそれを「コアにない」と報告し、本来書き出すべきページが落ちる。コード中の `TODO` コメントとドキュメントの両方に、この制約が明記されている。
+
+```mermaid
+flowchart TB
+    A["Diff スナップショットの要求"] --> B{"track_dirty_pages は"}
+    B -- "有効" --> C["KVM_GET_DIRTY_LOG で正確なビットマップを取る"]
+    B -- "無効" --> D["mincore(2) で「コアに載っているページ」を dirty とみなす"]
+    D --> E["触られたページは常駐しているので<br/>「書かれたページ」は「常駐しているページ」に含まれる<br/>= over-approximation。内容としては正しい"]
+    D --> F["read しかしていないページも書き出されるので<br/>ファイルは大きくなる (ただし依然スパース)"]
+    D --> G["swap が有効だと壊れる<br/>書き込まれたページが swap out されると<br/>mincore は「コアにない」と報告し、取りこぼす"]
+    N["dirty tracking を有効にすると KVM がゲストページテーブルを<br/>4K 粒度で張るため huge pages の利点がほぼ消える<br/>= mincore は huge pages と Diff を両立させる答えでもある"]
+    N -.-> D
+```
 
 ### 書き込みに失敗したら dirty 情報を内部ビットマップへ戻す
 

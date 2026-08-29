@@ -26,18 +26,23 @@ Firecracker の脅威モデルはこれを明文化している (`docs/formal-ve
 
 **検証はすべて「ゲストメモリから 1 回読んでローカルにコピーし、コピーを検証し、以降はコピーだけを使う」形**に揃えられている。
 
-```
-   avail ring                    descriptor table (ゲストが書く)
-   idx / ring[..] ──index──▶     [0] [1] [2] ...
-       │                          │
-   [4] size < (idx - next_avail)  [1] index < queue_size か
-       │   なら InvalidAvailIdx   [5] read_volatile で 1 回だけ読む
-       ▼                          │
-   pop_unchecked ──▶ DescriptorChain ◀──┘  addr/len/flags/next のコピー + ttl
-                          │
-                     [2] next < queue_size か  [3] ttl > 1 か
-                          ▼ next_descriptor()
-                     DescriptorChain (ttl - 1)
+```mermaid
+flowchart TB
+    AV["avail ring — idx と ring[..]"] --> C4{"[4] size < (idx - next_avail) か"}
+    C4 -- "はい" --> ERR["InvalidAvailIdx<br/>avail.idx の過大申告"]
+    C4 -- "いいえ" --> POP["pop_unchecked<br/>fence(Acquire) してから ring[] を読む"]
+    POP --> IDX["descriptor table の添字 index"]
+    IDX --> C1{"[1] index < queue_size か"}
+    C1 -- "いいえ" --> NONE["None を返す"]
+    C1 -- "はい" --> RD["[5] read_volatile で 16 バイトを 1 回だけ読み<br/>DescriptorChain にコピーする"]
+    RD --> C2{"[2] NEXT が立つなら next < queue_size か"}
+    C2 -- "いいえ" --> NONE
+    C2 -- "はい" --> DC["DescriptorChain<br/>addr / len / flags / next のコピー と ttl"]
+    DC --> C3{"[3] has_next — NEXT が立ち、かつ ttl > 1 か"}
+    C3 -- "はい" --> NX["next_descriptor() が ttl - 1 で次を作る"]
+    NX --> C1
+    C3 -- "いいえ" --> END["鎖の終わり"]
+    DC -.-> LATER["addr と len はここでは検証しない<br/>使う側 — Request::parse / IoVecBufferMut — が<br/>mem.get_slice でゲストメモリの範囲を確認する"]
 ```
 
 一方で、**`addr` と `len` は `DescriptorChain` の段階では一切検証されない**。これは意図的な分業で、実際にそのバッファへアクセスする側 (block の `Request::parse`、net の `IoVecBufferMut`) が `mem.get_slice(addr, len)` などでゲストメモリの範囲に収まるかを確認する。
@@ -170,6 +175,14 @@ pub(crate) fn report_net_event_fail(net_iface_metrics: &NetDeviceMetrics, err: D
 balloon にも同型の `report_balloon_event_fail` がある。一方スナップショット復元側は `PersistError::InvalidAvailIdx` として素直にエラーへ変換する ([`src/vmm/src/devices/virtio/persist.rs#L21-L30`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/virtio/persist.rs#L21-L30))。
 
 なぜログではなく panic なのかは、`InvalidAvailIdx` の型定義のコメントが答えている ([`src/vmm/src/devices/virtio/queue.rs#L44-L58`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/devices/virtio/queue.rs#L44-L58))。
+
+```mermaid
+flowchart TB
+    P["Queue::pop() が self.size < len を検出し<br/>Err(InvalidAvailIdx) を返す。ここでは panic しない"]
+    P --> W{"エラーを受け取ったのはどちらの文脈か"}
+    W -- "実行中のゲストが原因<br/>イベントループ" --> PA["panic! して Firecracker を落とす<br/>悪意あるドライバによる DoS 試行とみなす<br/>ログを出し続けること自体が攻撃面になる"]
+    W -- "壊れたスナップショットが原因<br/>復元パス" --> ER["PersistError::InvalidAvailIdx として<br/>API の呼び出し元にエラーを返す<br/>ここで落ちたら何が悪いのか分からない"]
+```
 
 > Should this error bubble up to the event loop, we exit Firecracker, since this could be a potential malicious driver scenario. This way we also eliminate the risk of repeatedly logging and potentially clogging the microVM through the log system.
 

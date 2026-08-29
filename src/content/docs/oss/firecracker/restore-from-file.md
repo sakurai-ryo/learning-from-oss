@@ -20,22 +20,14 @@ Ok(guest_mem)
 
 `snapshot_file()` がやるのは `mmap(..., MAP_PRIVATE, fd, offset)` である。**ファイルの中身を読む処理はどこにもない。**
 
-```
-[ snapshot の mem_file (ディスク上) ]
-            │  mmap(MAP_PRIVATE)
-            ▼
-[ Firecracker の仮想アドレス空間 ]  <- この時点で物理ページは 0 枚
-            │  KVM_SET_USER_MEMORY_REGION
-            ▼
-[ ゲスト物理アドレス空間 ]
-
-  ゲストが未マップのページを読む
-     -> EPT violation -> ホストのページフォルト
-     -> カーネルがページキャッシュからページを供給（無ければディスクから読む）
-
-  ゲストがそのページに書く
-     -> COW でコピーが作られ、匿名ページに置き換わる
-     -> 元のファイルは変更されない
+```mermaid
+flowchart TB
+    A["snapshot の mem_file (ディスク上)"] -- "mmap(MAP_PRIVATE)" --> B["Firecracker の仮想アドレス空間<br/>この時点で物理ページは 0 枚"]
+    B -- "KVM_SET_USER_MEMORY_REGION" --> C["ゲスト物理アドレス空間"]
+    C --> D["ゲストが未マップのページを読む<br/>→ EPT violation → ホストのページフォルト<br/>→ カーネルがページキャッシュから供給する<br/>(無ければディスクから読む)"]
+    C --> E["ゲストがそのページに書く<br/>→ COW でコピーが作られ、匿名ページに置き換わる<br/>→ 元のファイルは変更されない"]
+    N["復元とは「マッピングを張ること」であって<br/>「ロードすること」ではない"]
+    N -.-> B
 ```
 
 つまり **復元とは「マッピングを張ること」であって「ロードすること」ではない**。ドキュメントもこの点を明示している。
@@ -165,15 +157,17 @@ balloon 由来の回避策は [`src/vmm/src/vstate/memory.rs#L726-L755`](https:/
 
 メモリは復元の一部でしかない。入口は [`src/vmm/src/persist.rs#L377-L493`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/persist.rs#L377-L493) の `restore_from_snapshot()` である。
 
-```
-restore_from_snapshot()
-  1. snapshot_state_from_file()        状態ファイルを読み、MicrovmState に戻す
-  2. network_overrides を適用           tap 名を差し替える
-  3. vsock_override を適用              UDS パスを差し替える
-  4. update_machine_config()           vCPU 数・メモリサイズ等をスナップショットの値に合わせる
-  5. snapshot_state_sanity_check()     メモリ領域と CPU ベンダを検証
-  6. guest_memory_from_file/uffd()     ゲストメモリを用意
-  7. build_microvm_from_snapshot()     KVM とデバイスを組み立てる
+```mermaid
+flowchart TB
+    A["restore_from_snapshot()"] --> B["1. snapshot_state_from_file()<br/>状態ファイルを読み、MicrovmState に戻す"]
+    B --> C["2. network_overrides を適用 — tap 名を差し替える"]
+    C --> D["3. vsock_override を適用 — ホスト側 UDS のパスを差し替える"]
+    D --> E["4. update_machine_config()<br/>vCPU 数・メモリサイズ等をスナップショットの値に合わせる"]
+    E --> F["5. snapshot_state_sanity_check()<br/>メモリ領域と CPU ベンダを検証。スロット数の上限はここでは見ない"]
+    F --> G["6. guest_memory_from_file() / guest_memory_from_uffd()"]
+    G --> H["7. build_microvm_from_snapshot()<br/>KVM とデバイスを組み立てる"]
+    N["2 と 3 があるのは、状態ファイルが外部リソースを名前で参照しているから<br/>tap デバイス名やホスト側 UDS のパスは復元先では違いうる"]
+    N -.-> C
 ```
 
 2 と 3 が入っているのは、**状態ファイルが外部リソースを名前で参照している**からだ。tap デバイス名やホスト側 UDS のパスは、復元先のホストでは違う名前になっているかもしれない。そこで API で上書きできるようにしてある（[`src/vmm/src/vmm_config/snapshot.rs#L61-L76`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/vmm_config/snapshot.rs#L61-L76)）。上書きの実装は、シリアライズされたデバイス状態の中の文字列を直接書き換えるという素朴なものである（[`src/vmm/src/persist.rs#L385-L425`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/persist.rs#L385-L425)）。

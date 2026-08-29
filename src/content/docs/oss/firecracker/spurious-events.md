@@ -47,27 +47,18 @@ virtio デバイスには「まだゲストのドライバに設定されてい�
 
 そこで Firecracker は、購読するイベントを 2 段階に分ける。
 
-```
-[デバイス生成]
-     |
-     |  init() → activate_evt だけを epoll に登録
-     v
-[未 activate]
-     |
-     |  ゲストが DRIVER_OK を書く
-     |    → activate() が呼ばれ、最後に activate_evt.write(1) で自己通知
-     v
-[activate_evt 発火]
-     |
-     |  process_activate_event():
-     |    1. activate_evt を read() して消費
-     |    2. ランタイムイベント群を登録
-     |         - RX / TX キューの eventfd
-     |         - TAP fd (エッジトリガ)
-     |         - RX / TX レートリミッタの timerfd
-     |    3. activate_evt を epoll から remove
-     v
-[activate 済み]
+```mermaid
+flowchart TB
+    A["デバイス生成"] --> B["init() が activate_evt だけを epoll に登録"]
+    B --> C["未 activate<br/>キューの eventfd はまだ購読していない"]
+    C -- "ゲストが DRIVER_OK を書く" --> D["activate() が呼ばれ、最後に<br/>activate_evt.write(1) で自己通知する"]
+    D --> E["次の epoll ループで activate_evt が発火"]
+    E --> F["process_activate_event()<br/>1. activate_evt を read() して消費<br/>2. ランタイムイベント群を登録<br/>RX / TX キューの eventfd、TAP fd (エッジトリガ)、<br/>RX / TX レートリミッタの timerfd<br/>3. activate_evt を epoll から remove"]
+    F --> G["activate 済み"]
+    N["activate() はゲストの MMIO 書き込み経路から呼ばれ、<br/>そこでは EventOps を持っていない<br/>= eventfd で自分にイベントを送る遠回りが要る"]
+    N -.-> D
+    R["スナップショットから復元したデバイスは生成直後に activate 済み<br/>init() がいきなりランタイムイベントを登録する"]
+    R -.-> B
 ```
 
 virtio-net の場合の登録内容がこれである。
@@ -220,6 +211,17 @@ TAP からのフレーム読み出しはゲストが RX バッファを供給で
 **2 つ目。eventfd はレベルトリガである。** epoll のデフォルトはレベルトリガなので、eventfd のカウンタが 0 でない限り `epoll_wait` は毎回それを返す。`process()` が read せずに帰れば、次のループでまた同じイベントが返る。CPU を 100% 食いながら何もしないループになる。実際にはデバイスが再び activate されるまでこれが続く。
 
 `let _ = event.read();` の 1 行はこれを断ち切っている。読めばカウンタが 0 に戻り、レベルトリガは静まる。値そのものは捨てて構わない。未 activate なのだから処理できるものは何もなく、activate されたときに改めてキューを走査すれば同じことだからだ。レートリミッタの timerfd に対して `event_handler()` を呼んでいるのも同じ意図で、timerfd を read してタイマの発火状態を解消している([レートリミッタ](../rate-limiter/)は `AsRawFd` を実装しているので、デバイスから見れば他の fd と区別がない)。
+
+```mermaid
+flowchart TB
+    A["ゲストが reset() でデバイスを未 activate に戻す"] --> B["ioeventfd の KVM 登録も epoll の登録も解除されない"]
+    B --> C["再初期化が終わる前にゲストが通知レジスタを叩く"]
+    C --> D["eventfd のカウンタが 1 以上のまま残る"]
+    D --> E{"未 activate 側の process() は<br/>read するか、しないか"}
+    E -- "read しないで帰る" --> F["レベルトリガなので次のループでも同じイベントが返る<br/>= CPU を食いながら何もしないループ"]
+    F --> E
+    E -- "drain_queue_events() で read して捨てる" --> G["カウンタが 0 に戻り、レベルトリガが静まる<br/>値は捨てて構わない<br/>activate 後に改めてキューを走査すれば同じこと"]
+```
 
 この修正は net だけでなく block / balloon / vsock / pmem / rng / mem の各 event_handler に一斉に入っている。全デバイス共通の穴だったということである。
 

@@ -26,18 +26,26 @@ VMM から見ると、1〜3 は**全部無駄**だ。ハードウェアの初期
 
 つまり VMM は、**手順 4 の「ブートローダがカーネルにジャンプする直前の状態」を、いきなり作れる**。1〜3 が消え、4 が `read` と `memcpy` と数本の ioctl になる。
 
-```
-  物理マシン:
-    リセットベクタ → BIOS/UEFI → ブートローダ → カーネル
-    └──────────── 数秒〜数十秒 ─────────────┘
-
-  VMM:
-    ゲストメモリにカーネルを memcpy    ← ホストの read(2)
-    ゲストメモリに boot_params を書く  ← ただのメモリ書き込み
-    ゲストメモリにページテーブルと GDT を書く
-    KVM_SET_REGS / KVM_SET_SREGS
-    KVM_RUN                            ← いきなりカーネルが走り出す
-    └──────────── 数ミリ秒 ────────────┘
+```mermaid
+flowchart TB
+    subgraph phys["物理マシン — 数秒〜数十秒"]
+        direction TB
+        P1["1. リセットベクタ<br/>16 ビットリアルモードで 0xfffffff0 から"]
+        P2["2. BIOS / UEFI<br/>DRAM の初期化 / PCI 列挙 / ACPI 構築 / POST"]
+        P3["3. ブートローダ<br/>MBR や ESP から GRUB を読んで実行"]
+        P4["4. ブートローダがカーネルを読む<br/>vmlinuz と initrd をメモリへ<br/>カーネルが期待する状態を作ってジャンプ"]
+        P5["5. カーネル"]
+        P1 --> P2 --> P3 --> P4 --> P5
+    end
+    subgraph vmm["VMM — 数ミリ秒。1〜3 が丸ごと消える"]
+        direction TB
+        V1["ゲストメモリにカーネルを memcpy<br/>= ホストの read(2)"]
+        V2["ゲストメモリに boot_params を書く<br/>= ただのメモリ書き込み"]
+        V3["ゲストメモリにページテーブルと GDT を書く"]
+        V4["KVM_SET_REGS / KVM_SET_SREGS"]
+        V5["KVM_RUN<br/>いきなりカーネルが走り出す"]
+        V1 --> V2 --> V3 --> V4 --> V5
+    end
 ```
 
 ## 「カーネルが期待する状態」とは何か
@@ -126,6 +134,35 @@ pub const ZERO_PAGE_START: u64 = 0x7000;
 
 `HIMEM_START = 1 MiB` から上にカーネルを置くのは PC の伝統だ。最初の 1 MiB はリアルモードでアクセスできる範囲で、歴史的に BIOS のデータ領域や VGA バッファが散らばっている。Linux はそこを避ける。
 
+レジスタとこのレイアウトの対応を取ると、VMM が用意する「カーネルが期待する状態」の全体が 1 枚に収まる。
+
+```mermaid
+flowchart LR
+    subgraph regs["vCPU レジスタ — KVM_SET_REGS / KVM_SET_SREGS で直接書く"]
+        direction TB
+        RIP["rip"]
+        RSI["rsi"]
+        RSP["rsp / rbp"]
+        CR3["cr3"]
+        GDTR["sregs.gdt.base"]
+    end
+    subgraph gmem["ゲスト物理メモリ — ホストからは mmap した領域"]
+        direction TB
+        GDT["0x00000500 GDT (NULL / CODE / DATA / TSS)"]
+        ZP["0x00007000 zero page = boot_params"]
+        STK["0x00008ff0 ブート時スタック (下方向)"]
+        PT["0x00009000 PML4 → PDPTE → PDE<br/>0〜1GiB を 2MiB ページで恒等マップ"]
+        CMD["0x00020000 カーネルコマンドライン"]
+        KRN["0x00100000 カーネル本体"]
+    end
+    RIP --> KRN
+    RSI --> ZP
+    RSP --> STK
+    CR3 --> PT
+    GDTR --> GDT
+    ZP -- "hdr.cmd_line_ptr" --> CMD
+```
+
 ### カーネルを読み込む
 
 `load_kernel` が ELF を試して、失敗したら bzImage にフォールバックする ([`src/vmm/src/arch/x86_64/mod.rs#L496-L566`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/arch/x86_64/mod.rs#L496-L566))。
@@ -166,6 +203,19 @@ bzImage 側は明示的に 64 ビットエントリを要求する。
 ```
 
 `BZIMAGE_64BIT_ENTRY_OFFSET` は `0x200` で、「ロード先アドレス + 0x200 が 64 ビットエントリ」というのが boot protocol の定めだ。プロトコル 2.12 未満のカーネルは**そもそも起動できない**として弾く。互換性の裾野を切って、リアルモードから始める経路を実装しないという判断になっている。
+
+入口の選び方をまとめるとこうなる。
+
+```mermaid
+flowchart TB
+    A["カーネルイメージを read(2) する"] --> B{"ELF マジックがあるか"}
+    B -- "ある = vmlinux" --> C{"PVH エントリのノートがあるか"}
+    C -- "ある" --> D["PVH ブート<br/>32 ビットプロテクトモードで入る"]
+    C -- "ない" --> E["Linux 64 ビットブート<br/>setup_header はゼロから作る"]
+    B -- "ない = bzImage" --> F{"version >= 2.12 かつ<br/>XLF_KERNEL_64 が立っているか"}
+    F -- "はい" --> G["Linux 64 ビットブート<br/>ロード先 + 0x200 が入口<br/>setup_header はイメージから読み取る"]
+    F -- "いいえ" --> H["BzImageMissing64BitEntry でエラー<br/>リアルモードから始める経路は実装しない"]
+```
 
 ### zero page を組み立てる
 

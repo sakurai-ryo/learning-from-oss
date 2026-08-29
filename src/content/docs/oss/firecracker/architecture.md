@@ -20,28 +20,18 @@ sidebar:
 
 ### プロセス内の 3 種類のスレッド
 
-```
-host
- │
- ├─ jailer プロセス
- │    cgroup を作る / chroot する / netns に入る / 権限を落とす
- │    → execve("firecracker") で同じプロセスが firecracker になる
- │      （jailer プロセスは消える。監視プロセスとして残るわけではない）
- │
- └─ firecracker プロセス  ────────────── これで microVM 1 つ
-      │
-      ├─ fc_api スレッド
-      │    Unix ドメインソケット上の HTTP サーバ（micro-http）
-      │    自前の epoll を回す。kill switch eventfd で止まる
-      │
-      ├─ VMM スレッド（プロセスの main スレッド）
-      │    event-manager（epoll）のループ
-      │    virtio デバイスの emulation、rate limiter、MMDS
-      │    メトリクスの定期 flush（timerfd）
-      │
-      └─ fc_vcpu 0 … fc_vcpu N-1 スレッド（ゲスト vCPU 1 つにつき 1 本）
-           KVM_RUN のループ
-           VM exit を同期的に処理して MMIO / PIO バスに流す
+```mermaid
+flowchart TB
+    J["jailer プロセス<br/>cgroup を作る / chroot する / netns に入る / 権限を落とす"]
+    J -- "execve で自分自身を firecracker に置き換える<br/>jailer プロセスは残らない" --> FC
+    subgraph FC["firecracker プロセス = microVM ちょうど 1 つ"]
+        direction TB
+        API["fc_api スレッド<br/>Unix ドメインソケット上の HTTP サーバ (micro-http)<br/>自前の epoll を回す。kill switch eventfd で止まる"]
+        VMM["VMM スレッド (プロセスの main スレッド)<br/>event-manager (epoll) のループ<br/>virtio デバイスの emulation / rate limiter / MMDS<br/>メトリクスの定期 flush (timerfd)"]
+        VC["fc_vcpu 0 … fc_vcpu N-1 スレッド<br/>ゲスト vCPU 1 つにつき 1 本<br/>KVM_RUN のループ<br/>VM exit を同期的に MMIO / PIO バスへ流す"]
+        API --- VMM
+        VMM --- VC
+    end
 ```
 
 スレッドの名前はコード中でそのまま付けられている。API スレッドは `fc_api`、vCPU スレッドは `fc_vcpu {index}` である。この名前は seccomp フィルタのキー（`api` / `vmm` / `vcpu`）とも対応していて、[スレッドごとに違うフィルタ](../per-thread-seccomp/)を当てる単位になっている。
@@ -58,6 +48,22 @@ host
 | デバイス → ゲスト | irqfd（KVM に登録した eventfd）。VMM スレッドが書くと KVM が割り込みを注入する                               |
 
 「共有メモリ＋ロック」ではなく「チャネル＋eventfd」で揃えているのは、**VMM スレッドの epoll ループに全部の待ちを集約する**ためである。VMM スレッドは `event_manager.run()` を回すだけで、API 要求もデバイス I/O も vCPU の終了も同じループで拾える。
+
+```mermaid
+flowchart LR
+    G(["ゲスト"])
+    API["API スレッド"]
+    VMM["VMM スレッド<br/>event_manager の epoll ループ"]
+    VCPU["vCPU スレッド"]
+
+    API -- "ApiRequest (mpsc) + api_event_fd" --> VMM
+    VMM -- "ApiResponse (mpsc)<br/>API 側は recv() でブロック" --> API
+    VMM -- "VcpuEvent (mpsc) + シグナルで叩き起こす" --> VCPU
+    VCPU -- "応答チャネル + vcpus_exit_evt" --> VMM
+    G -- "MMIO 書き込みで VM exit" --> VCPU
+    VCPU -- "バス経由でデバイスの eventfd を叩く" --> VMM
+    VMM -- "irqfd に write すると KVM が割り込みを注入" --> G
+```
 
 ### 外側の jailer
 

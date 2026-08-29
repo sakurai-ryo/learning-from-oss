@@ -12,15 +12,14 @@ Firecracker は初期から v1.12.0 まで、**PCI バスを持たない x86 マ
 
 v1.13.0 で PCI トランスポートが入った。ただし置き換えではなく、**起動時のフラグ 1 つによる二者択一**である。
 
-```
-firecracker --enable-pci
-   │
-   └→ vm_resources.pci_enabled = true
-         │
-         └→ DeviceManager::create_virtio_devices(pci_enabled, vm)
-               ├─ true  → VirtioDevices::Pci(PciDevices::new(vm)?)
-               └─ false → VirtioDevices::Mmio(MMIOVirtioDevices::new())
-                          + boot_cmdline.insert("pci", "off")
+```mermaid
+flowchart TB
+    F["firecracker --enable-pci"] --> R["vm_resources.pci_enabled = true"]
+    R --> C["DeviceManager::create_virtio_devices(pci_enabled, vm)"]
+    C -- "true" --> P["VirtioDevices::Pci(PciDevices::new(vm)?)"]
+    C -- "false" --> M["VirtioDevices::Mmio(MMIOVirtioDevices::new())<br/>加えて boot_cmdline に pci=off を挿入"]
+    P --> D["block / net / vsock / balloon / pmem / entropy / mem<br/>デバイスごとの設定は一切変わらない<br/>変わるのは「どのトランスポートに包むか」だけ"]
+    M --> D
 ```
 
 デバイスの種類（block / net / vsock / balloon / pmem / entropy / mem）ごとの設定は一切変わらない。変わるのは「どのトランスポートに包むか」だけで、`VirtioDevices` という enum の 2 バリアントに閉じ込められている。

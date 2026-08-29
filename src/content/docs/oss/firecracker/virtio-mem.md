@@ -14,17 +14,24 @@ sidebar:
 
 virtio-mem はこれを一段深くやる。ゲスト物理アドレス空間の中にあらかじめ「ホットプラグ可能な領域」を確保しておき、そのうち実際にプラグされた部分だけを **KVM メモリスロットとして登録する**。未プラグの部分はスロットが存在しないので、ゲストがアクセスすると KVM は変換先を持たず、フォールトする。さらにホストプロセス側の VMA も `mprotect(PROT_NONE)` で塞いであるので、Firecracker 自身のデバイスエミュレーションがそこを読み書きしようとしても SIGSEGV になる。
 
-```
-                balloon                        virtio-mem
-ゲスト物理    +----------------+            +----------------+
-アドレス空間  | DRAM (固定)    |            | DRAM (固定)    |
-              |  balloon 中の  |            +----------------+
-              |  ページも      |            | hotplug 領域   |
-              |  スロット内    |            |  slot0 plugged | ← KVM に登録
-              +----------------+            |  slot1 unplug  | ← KVM から外れて
-KVM スロット   常に全部登録                 |  slot2 unplug  |    PROT_NONE
-mprotect       しない                       +----------------+
-ゲストが触ると ゼロページが割当たる          フォールト（VM が死ぬ）
+```mermaid
+flowchart LR
+    subgraph b["balloon — 協調的"]
+        direction TB
+        B1["ゲスト物理アドレス空間の構成は変わらない"]
+        B2["balloon 中のページも KVM スロット内に残る"]
+        B3["mprotect はしない"]
+        B4["ゲストが触ると KVM がフォールトを処理し<br/>新しいゼロページが割り当たる"]
+        B1 --> B2 --> B3 --> B4
+    end
+    subgraph m["virtio-mem — 強制的"]
+        direction TB
+        M1["DRAM (固定) とは別に hotplug 領域を持つ"]
+        M2["plugged のスロットだけ KVM に登録<br/>unplug のスロットは KVM から外す"]
+        M3["unplug のスロットは mprotect(PROT_NONE)"]
+        M4["ゲストが触るとフォールト<br/>= Firecracker が死ぬ。データは漏れない"]
+        M1 --> M2 --> M3 --> M4
+    end
 ```
 
 `docs/memory-hotplug.md` は保護の強さを 3 段階で書き分けている。一度もプラグされていないメモリは KVM スロットに無く `mprotect` 済み。unplug されたスロットは KVM から取り外して `mprotect` される。unplug されたブロックはバッキングページが解放される。**ブロック単位では解放しかできず、保護が掛かるのはスロット単位** という非対称がここに出ている。
@@ -41,6 +48,18 @@ mprotect       しない                       +----------------+
 unplug 処理は、(1) 内部のブロックビットマップ `plugged_blocks` を更新、(2) 影響を受ける **スロット** を走査して、全ブロックが unplug になったスロットを KVM から外し `mprotect(PROT_NONE)`、(3) そのあとで `discard_range` を呼んで実メモリを解放、の順に進む。
 
 2 と 3 が逆だと何が起きるかはコメントが直接答えている。「Update kvm slots before doing any discards to prevent guest from re-faulting just discarded memory」。ゲストの vCPU は別スレッドで走り続けているので、`discard_range` でページを捨てた直後にゲストがその領域に触ると、KVM はまだスロットを持っているためフォールトを処理して新しいページを割り当ててしまう。せっかく解放したメモリが即座に戻ってくる。先にスロットを外しておけば、その競合は起きない。
+
+```mermaid
+flowchart TB
+    A["ドライバから unplug 要求"] --> B["1. 内部のブロックビットマップ plugged_blocks を更新"]
+    B --> C["2. 影響を受けるスロットを走査し、<br/>中の全ブロックが unplug になったスロットだけ<br/>KVM から外して mprotect(PROT_NONE)"]
+    C --> D["3. discard_range() で実メモリを解放"]
+    D --> E["失敗してもメトリクスとログだけで、<br/>ドライバには成功として応答する<br/>= ゲストから見た unplug の事実はもう確定している"]
+    N["2 と 3 が逆だと、捨てた直後にゲストが触ったときに<br/>KVM がまだスロットを持っているためフォールトを処理し、<br/>解放したメモリが即座に戻ってくる"]
+    N -.-> C
+    P["plug のときは逆順<br/>アクセス可能にしてから KVM に追加する<br/>= ゲストから見えている期間は必ずホスト側でもアクセス可能"]
+    P -.-> C
+```
 
 plug のときは逆順になる。`update_slot` は plug なら「アクセス可能にしてから KVM に追加」、unplug なら「KVM から外してから保護」で、どちらも **「ゲストから見えている期間は、必ずホスト側でアクセス可能」** という不変条件を保つための順序である。
 

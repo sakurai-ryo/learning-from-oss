@@ -22,11 +22,20 @@ pub struct Logger(pub RwLock<LoggerConfiguration>);
 
 この 2 つが揃うと、実行中のプロセスで書き込みロックが取られることがなくなる。すると次が言える。
 
-```
-スレッド A: log()  ─ read lock 取得 ─┐
-                                     │  この間に SIGSEGV / SIGBUS
-                                     ▼
-             シグナルハンドラ ─ log() ─ read lock をもう 1 回取得 → 通る
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as スレッド A
+    participant L as Logger (RwLock)
+    participant H as シグナルハンドラ<br/>(同じスレッドで走る)
+
+    T->>L: log() — read lock を取得
+    Note over T: 書き込み中に SIGSEGV / SIGBUS
+    T->>H: 同じスレッドでハンドラが走る
+    H->>L: log() — read lock をもう 1 回取得
+    Note over L: ライタが待っていなければ通る<br/>Mutex ならここでプロセスがデッドロックする
+    L-->>H: ログを書ける
+    H->>H: METRICS.write() してから _exit
 ```
 
 **同じスレッドが読み取りロックを入れ子で取れる。** ライタが待っていなければ、`RwLock::read()` は既に読み取りロックが取られていても成功する。`Mutex` だったら、この瞬間にプロセスがデッドロックする。ログも出せず、メトリクスも書けず、SIGSEGV の原因も分からないまま固まる。

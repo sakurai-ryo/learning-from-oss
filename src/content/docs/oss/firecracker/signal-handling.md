@@ -12,15 +12,18 @@ sidebar:
 
 Firecracker は起動時に 8 つのシグナルにハンドラを登録する。うち 7 つは共通の形をしている。
 
-```
-シグナル受信
-  ├─ si_signo が期待どおりか確認（違えば UnexpectedError で _exit）
-  ├─ 対応するメトリクスに store(1)
-  ├─ "Shutting down VM after intercepting signal N, code M." をログ
-  ├─ シグナル固有の処理（SIGSYS だけ、違反した syscall 番号をログ）
-  └─ exit_with_code(FcExitCode::XXX)
-       ├─ METRICS.write()      ← メトリクスを吐き切る
-       └─ libc::_exit(code)    ← exit() ではない
+```mermaid
+flowchart TB
+    A["シグナル受信"] --> B{"si_signo が期待どおりか"}
+    B -- "違う" --> X["UnexpectedError で _exit"]
+    B -- "合う" --> C["対応するメトリクスに store(1)"]
+    C --> D["Shutting down VM after intercepting signal N, code M. をログへ"]
+    D --> E["シグナル固有の処理<br/>SIGSYS だけ、違反した syscall 番号をログに出す"]
+    E --> F["exit_with_code(FcExitCode::XXX)"]
+    F --> G["METRICS.write() — メトリクスを吐き切る"]
+    G --> H["libc::_exit(code)<br/>exit() ではない = atexit / stdio フラッシュ / デストラクタを飛ばす"]
+    N["終了コードはシグナルごとに違う<br/>SIGBUS=149 / SIGSEGV=150 / SIGXFSZ=151 / SIGXCPU=154 /<br/>SIGHUP=156 / SIGILL=157 / SIGSYS=148<br/>= 親プロセスは終了コードだけで死因が分かる"]
+    N -.-> F
 ```
 
 終了コードはシグナルごとに違う値になっている（SIGBUS=149、SIGSEGV=150、SIGXFSZ=151、SIGXCPU=154、SIGHUP=156、SIGILL=157、SIGSYS=148）。**親プロセスは終了コードだけで死因が分かる。** メトリクスファイルを読まなくてよい。
@@ -52,14 +55,23 @@ Firecracker のログ出力先は名前付きパイプであることが多い�
 
 そこでログを出したらどうなるか。
 
-```
-スレッド A: log() ── RwLock read 取得 ── write_all(pipe) ─┐
-                                                          │ SIGPIPE
-                                                          ▼
-             ハンドラ: log() ── RwLock read 取得 ── write_all(pipe) ─┐
-                                                                     │ SIGPIPE
-                                                                     ▼
-                                                                    ...
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as スレッド A
+    participant P as 名前付きパイプ<br/>(読み手が居ない)
+
+    T->>P: log() → write_all
+    P-->>T: SIGPIPE
+    Note over T: ハンドラは、その write を実行している<br/>まさにそのスレッドで、write の途中で走る
+    alt もしハンドラがログを出したら
+        T->>P: log() → write_all
+        P-->>T: SIGPIPE
+        Note over T,P: 以下、無限再帰
+    else 実際の実装 — ログを出さない
+        T->>T: METRICS.signals.sigpipe.inc() だけして戻る
+        Note over T: write は EPIPE を返し、<br/>呼び出し側が missed_log_count を増やす
+    end
 ```
 
 無限再帰になる。[ロガーが `RwLock` を使っている](../logger-reentrancy/)のは、シグナルハンドラからのログを可能にするためだが、それは「再入しても止まらない」ことしか保証しない。**再入が無限に続くことは防げない。** だからハンドラ側が出さない。

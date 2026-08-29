@@ -12,13 +12,13 @@ sidebar:
 
 Firecracker の「スナップショットを取る」は、動いている microVM を 2 つのファイルに落とすことを指す。
 
-```
-PUT /snapshot/create
-  ├─ mem_file_path   ─> ゲストメモリの生ダンプ (数百 MB 〜 数 GB)
-  └─ snapshot_path   ─> microVM 状態ファイル   (数十 KB 〜 数 MB)
-
-  ※ ブロックデバイスのバッキングファイルはスナップショットに含まれない。
-    ユーザが自分でバックアップする。
+```mermaid
+flowchart TB
+    A["PUT /snapshot/create"] --> B["mem_file_path<br/>ゲストメモリの生ダンプ (数百 MB 〜 数 GB)<br/>= ページ単位でオンデマンドに読み込みたい巨大なバイト列"]
+    A --> C["snapshot_path<br/>microVM 状態ファイル (数十 KB 〜 数 MB)<br/>= 一括で読んで構造体に戻したい小さなデータ"]
+    D["ブロックデバイスのバッキングファイル<br/>スナップショットに含まれない。ユーザが自分でバックアップする"]
+    D -.-> A
+    C --> E["メモリを外に出したからこそ<br/>10MB という静的な上限を置ける"]
 ```
 
 この分割は偶然ではない。**メモリファイルは「ページ単位でオンデマンドに読み込みたい巨大なバイト列」であり、状態ファイルは「一括で読んで構造体に戻したい小さなデータ」である。** 要求が違うので、フォーマットもストレージ戦略も別にしてある。メモリファイル側をどう復元するかは [`../restore-from-file/`](../restore-from-file/) と [`../uffd-handler/`](../uffd-handler/) で扱う。このページは状態ファイル側の話をする。
@@ -55,11 +55,20 @@ magic は `0x0710_1984_8664_0000`（x86_64）と `0x0710_1984_AAAA_0000`（aarch
 
 ### API から見た形
 
-```
-POST /actions {"action_type": "InstanceStart"}   ... microVM 起動
-PATCH /vm     {"state": "Paused"}                ... vCPU を止める
-PUT /snapshot/create {"snapshot_type": "Full", ...}
-PATCH /vm     {"state": "Resumed"}               ... 元の VM は続行できる
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 利用者
+    participant F as Firecracker
+
+    U->>F: POST /actions — InstanceStart
+    Note over F: microVM が起動する
+    U->>F: PATCH /vm — state=Paused
+    Note over F: vCPU を止める。これが CreateSnapshot の前提条件
+    U->>F: PUT /snapshot/create — snapshot_type=Full
+    F-->>U: 状態ファイルとメモリファイルを書き出す
+    U->>F: PATCH /vm — state=Resumed
+    Note over F: 元の VM はそのまま続行できる
 ```
 
 `CreateSnapshot` の前提条件は「microVM が `Paused` であること」だ。止めずに取ることはできない。`snapshot_type` は `Full` と `Diff` の 2 つで、`Diff` は前回のスナップショット以降に触られたページだけを疎ファイルに書く（[`../diff-snapshot/`](../diff-snapshot/)）。
@@ -191,11 +200,13 @@ fsync の非対称性は API 設定の定義そのものにコメントされて
 
 読み込みの検証は 3 段階に分かれているが、順序が素直ではない（[`src/vmm/src/snapshot/mod.rs#L182-L214`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/snapshot/mod.rs#L182-L214)）。
 
-```
-1. サイズ上限チェック            <- 読む前
-2. 末尾 8 バイトを切り離す
-3. load_without_crc_check()     <- bitcode デシリアライズ + magic + version
-4. CRC64 検証                   <- 最後
+```mermaid
+flowchart TB
+    A["1. サイズ上限チェック (10,000,000 バイト)<br/>Read::take(上限 + 1) で読み、超えていたらエラー"] --> B["2. 末尾 8 バイトを切り離す"]
+    B --> C["3. load_without_crc_check()<br/>bitcode デシリアライズ → magic 照合 → version 照合"]
+    C --> D["4. CRC64 検証<br/>CRC を含めた全体の CRC を取ると 0 になる、という性質を使う"]
+    N["magic はアーキごとに違う<br/>x86_64 は 0x0710_1984_8664_0000、aarch64 は 0x0710_1984_AAAA_0000<br/>= アーキ違いはバージョン以前に弾く"]
+    N -.-> C
 ```
 
 CRC が最後に来る。壊れているかどうかを見る前にデシリアライズしている。順序としては逆に見えるが、`docs/snapshotting/snapshot-support.md` は「CRC の計算はスナップショットをロードしようとする前に検証される」と書いており、ここでの `load()` の戻り値を使う前には CRC が通っていることが保証される。デシリアライズの失敗はそれ自体がエラーになるので、実害は出ない構造になっている。

@@ -14,28 +14,19 @@ EC2 の IMDS（インスタンスメタデータサービス）は、インス�
 
 驚くのは実装方法である。Firecracker はこの HTTP サービスを、**ホストのネットワークスタックを一切通さずに**提供する。TAP デバイスにも流さない。ゲストが送ったフレームを virtio-net デバイスモデルの中で横取りし、Firecracker プロセス内の自前 TCP/IP スタックで処理し、応答フレームを RX キューに直接載せて返す。
 
-```
-ゲスト                        Firecracker (VMM プロセス)              ホスト
-
-curl 169.254.169.254 ─┐
-                      │  TX キュー
-                      └──▶ process_tx()
-                             │
-                             ├ is_mmds_frame(headers)?
-                             │    yes ─▶ MmdsNetworkStack::detour_frame()
-                             │              │
-                             │              ├ Ethernet / ARP / IPv4 / TCP を自前でパース
-                             │              ├ TcpIPv4Handler → Endpoint
-                             │              ├ HTTP リクエストを組み立て直す
-                             │              └ Mmds データストアから値を引いて Response
-                             │
-                             └    no ──▶ writev(tap_fd) ────────────▶ TAP
-
-                           process_rx()
-                             ├ MmdsNetworkStack::write_next_frame() を先に試す
-                             │    (ARP 応答 → TCP セグメント の優先順)
-       RX キュー   ◀─────────┤
-                             └ なければ readv(tap_fd)
+```mermaid
+flowchart TB
+    C["ゲスト: curl 169.254.169.254"] --> TX["TX キュー → process_tx()"]
+    TX --> Q{"is_mmds_frame(headers) か"}
+    Q -- "いいえ" --> TAP["writev(tap_fd) → ホストの TAP へ"]
+    Q -- "はい" --> D["MmdsNetworkStack::detour_frame()"]
+    D --> P["dumbo が Ethernet / ARP / IPv4 / TCP を自前でパースする"]
+    P --> H["TcpIPv4Handler → Endpoint<br/>HTTP リクエストを組み立て直す"]
+    H --> M["Mmds データストアから値を引いて Response を作る"]
+    M --> R["process_rx() は TAP を読む前に<br/>MmdsNetworkStack::write_next_frame() を先に試す<br/>ARP 応答 → TCP セグメント の優先順"]
+    R --> RXQ["RX キュー → ゲストへ"]
+    N["ホストのネットワークスタックも TAP も一切通らない<br/>Firecracker プロセス内で完結する"]
+    N -.-> D
 ```
 
 この横取りを行うコンポーネントが `MmdsNetworkStack`（`src/vmm/src/mmds/ns.rs`）で、その下で Ethernet / ARP / IPv4 / TCP / HTTP を実際に処理するのが **dumbo**（`src/vmm/src/dumbo/`）である。

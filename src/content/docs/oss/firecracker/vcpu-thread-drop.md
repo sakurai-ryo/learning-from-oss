@@ -23,15 +23,13 @@ handle.vcpu_thread.join().unwrap();
 
 Firecracker の `VcpuHandle::Drop` は `join()` の前に **応答チャネルの切断をタイムアウト付きで待ち、時間切れなら panic する。**
 
-```
-Drop::drop()
-  ├─ loop {
-  │     response_receiver.recv_timeout(1 秒)
-  │       ├─ Err(Disconnected) ─> スレッドは終了した。break
-  │       ├─ Err(Timeout)      ─> panic!("Timed out waiting for vCPU thread ...")
-  │       └─ Ok(response)      ─> 想定外の応答。warn! して捨て、待ち直す
-  │   }
-  └─ thread.join().unwrap()
+```mermaid
+flowchart TB
+    D["VcpuHandle::drop()"] --> R["response_receiver.recv_timeout(1 秒)"]
+    R -- "Err(Disconnected)<br/>sender が drop された = スレッド終了" --> J["thread.join().unwrap()<br/>もう待たない。panic を伝播させるためだけ"]
+    R -- "Err(Timeout)" --> P["panic! — Timed out waiting for vCPU thread ... to exit<br/>スレッド名が入るので、どの vCPU が固まったか分かる"]
+    R -- "Ok(response)<br/>想定外に溜まっていた応答" --> W["warn! を出して捨て、待ち直す<br/>ここでは break しない"]
+    W --> R
 ```
 
 ### なぜ「チャネルの切断」を待つのか

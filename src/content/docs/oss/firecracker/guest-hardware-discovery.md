@@ -20,6 +20,19 @@ Firecracker にはファームウェアがない。カーネルは VMM がロー
 
 さらに virtio-mmio デバイスに限っては **4 番目の経路**がある。カーネルコマンドラインだ。Firecracker はデバイスごとに `virtio_mmio.device=4K@0xc0001000:5` のような文字列を追加し、かつ同じデバイスを ACPI の DSDT にも AML として書く。**同じ情報を 2 箇所に書いている。**
 
+```mermaid
+flowchart LR
+    FC["Firecracker<br/>ファームウェアがないので<br/>テーブルを自分で捏造する"]
+    FC --> E["e820 / PVH memmap<br/>物理メモリのどこが RAM でどこが予約か<br/>= 必須"]
+    FC --> M["MPTable (Intel MP Spec 1.4)<br/>vCPU 数 / LAPIC・IOAPIC のアドレス / IRQ 配線<br/>= 非推奨だが常に書く"]
+    FC --> A["ACPI テーブル<br/>上記すべて + デバイス + PCIe ECAM の位置<br/>= 推奨"]
+    FC --> C["カーネルコマンドライン<br/>virtio_mmio.device=4K@0xc0001000:5<br/>= virtio-mmio だけの 4 番目の経路"]
+    E --> G["ゲストカーネル<br/>「生まれつき知っている場所」を読みに来る"]
+    M --> G
+    A --> G
+    C --> G
+```
+
 ### メモリの下 1MB がテーブル置き場になっている
 
 x86 の「最初の 1MB」は、実機では BIOS とその作業領域が占めている歴史的な領域だ。Firecracker はここをまるごと自分の作業領域として使う。
@@ -106,6 +119,22 @@ PVH の場合は同じ 3 エントリ＋ DRAM 走査を `hvm_memmap_table_entry`
 ```
 
 DSDT → FADT（DSDT を指す）→ MADT → MCFG → XSDT（前 3 者を指す）→ RSDP（XSDT を指す）という一本道になる。RSDP だけはアロケータを通さず 0xe0000 固定に書く。ゲストカーネルが決め打ちで探しに来る場所だからだ。
+
+```mermaid
+flowchart LR
+    D["DSDT<br/>デバイスの AML<br/>COM1 / i8042 / virtio / VMGenID / GED"]
+    F["FADT<br/>DSDT のアドレスを持つ<br/>HW_REDUCED_ACPI、VGA なし"]
+    MA["MADT<br/>vCPU と割り込みコントローラ"]
+    MC["MCFG<br/>PCIe ECAM の位置<br/>PCI が無効でも常に書く"]
+    X["XSDT<br/>FADT / MADT / MCFG を指す"]
+    R["RSDP<br/>XSDT を指す<br/>0xe0000 固定 = ゲストが決め打ちで探しに来る"]
+    D --> F --> X
+    MA --> X
+    MC --> X
+    X --> R
+    N["RSDP 以外はアロケータが 0x9fc00 以降に配置<br/>実サイズ合計 8KB ほどに対して 257KiB を確保"]
+    N -.-> X
+```
 
 テーブルの実体は `src/acpi-tables/` に自前で置いてある。`rsdp.rs` / `xsdt.rs` / `fadt.rs` / `madt.rs` / `mcfg.rs` / `dsdt.rs` と、AML バイトコードを生成する 58KB の `aml.rs`。RSDP は `#[repr(C, packed)]` の構造体をそのままバイト列にし、チェックサムを 2 つ計算して書くだけだ（[`src/acpi-tables/src/rsdp.rs#L38-L56`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/acpi-tables/src/rsdp.rs#L38-L56)）。
 

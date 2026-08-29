@@ -26,20 +26,17 @@ Firecracker の設計文書は、脅威モデルの出発点を 1 文で言い�
 
 design.md は containment を「信頼度の異なるゾーンを入れ子にし、その境界に障壁を置くこと」と説明する。
 
-```
-┌─ ホストカーネル / ホストの他のプロセス（最も信頼される）───────────┐
-│  ┌─ jailer が作った箱 ─────────────────────────────────────┐   │
-│  │   pivot_root / mount ns / netns / PID ns / cgroup         │   │
-│  │   非特権 uid:gid / setrlimit                               │   │
-│  │  ┌─ Firecracker プロセス（1 プロセス = 1 microVM）─────┐  │   │
-│  │  │   seccomp フィルタ（api / vmm / vcpu で別々）        │  │   │
-│  │  │  ┌─ KVM の VM 境界 ───────────────────────────┐  │  │   │
-│  │  │  │   ゲスト（最も信頼されない）                  │  │  │   │
-│  │  │  │   ゲスト Linux カーネル + 顧客のワークロード    │  │  │   │
-│  │  │  └──────────────────────────────────────────┘  │  │   │
-│  │  └─────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph host["ホストカーネル / ホストの他のプロセス — 最も信頼される"]
+        subgraph jail["jailer が作った箱<br/>pivot_root / mount ns / netns / PID ns / cgroup<br/>非特権 uid:gid / setrlimit"]
+            subgraph fcproc["Firecracker プロセス — 1 プロセス = 1 microVM<br/>seccomp フィルタ (api / vmm / vcpu で別々)"]
+                subgraph kvm["KVM の VM 境界 — EPT / VMCS"]
+                    G["ゲスト — 最も信頼されない<br/>ゲスト Linux カーネル + 顧客のワークロード"]
+                end
+            end
+        end
+    end
 ```
 
 各境界が何を止めるかは役割がはっきり分かれている。

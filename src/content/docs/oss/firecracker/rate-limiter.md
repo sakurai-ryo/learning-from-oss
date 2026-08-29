@@ -39,15 +39,18 @@ pub enum BucketReduction {
 
 [`src/vmm/src/rate_limiter/mod.rs#L42-L51`](https://github.com/firecracker-microvm/firecracker/blob/cc535f035f3828b2c5bfc85276c5d394022ed220/src/vmm/src/rate_limiter/mod.rs#L42-L51)
 
-```
-要求トークン数 tokens に対して:
-
-  tokens <= budget             → Success        そのまま消費
-  budget < tokens <= size      → Failure        拒否。100ms 後に再試行タイマ
-  size < tokens                → OverConsumption(ratio)
-                                 バケットを空にして操作は通す
-                                 ratio = (tokens - budget) / size
-                                 以降 ratio * refill_time ミリ秒、全消費を停止
+```mermaid
+flowchart TB
+    R["reduce(tokens)"] --> Q1{"tokens <= budget か"}
+    Q1 -- "はい" --> S["Success<br/>そのまま消費する"]
+    Q1 -- "いいえ" --> AR["auto_replenish() で<br/>経過時間から補充してから再判定"]
+    AR --> Q2{"tokens > size か<br/>= バケット容量そのものより大きい要求"}
+    Q2 -- "はい" --> OC["OverConsumption(ratio)<br/>バケットを空にして操作は通す<br/>ratio = (tokens - budget) / size"]
+    OC --> T1["ratio × refill_time ミリ秒のタイマを張り<br/>その間 RateLimiter 全体の消費を止める = 借金の返済"]
+    Q2 -- "いいえ" --> Q3{"補充しても tokens > budget のままか"}
+    Q3 -- "はい" --> F["Failure<br/>拒否する"]
+    F --> T2["固定 100ms の再試行タイマを張る"]
+    Q3 -- "いいえ" --> S
 ```
 
 `OverConsumption` は「借金」である。バケットに入りきらない分を先に使わせてしまい、その返済に必要な時間だけ次以降の消費をブロックする。4MB / 1MB のバケットなら、おおよそ 3〜4 倍の `refill_time` だけ静止する。長期的な平均レートは守られ、しかも巨大な 1 発が詰まることもない。

@@ -37,6 +37,15 @@ dirty page tracking（`KVM_MEM_LOG_DIRTY_PAGES`）は「ゲストがどのペー
 
 ビットマップの粒度は 4 KiB である。KVM が 2 MiB の EPT エントリを 1 個張ってしまうと、その 2 MiB のうちどこが書き換わったかを区別できない。だから dirty logging を有効にしたスロットでは、KVM は huge mapping を分解して 4 KiB 粒度で EPT を張る。ホスト側の VMA が hugetlbfs でも関係ない。**ページテーブルの構築コストも TLB カバレッジも 4 KiB のときと同じに戻る** ので、hugepages を指定した意味がなくなる。
 
+```mermaid
+flowchart TB
+    A["huge_pages = 2M<br/>ホスト側の VMA は hugetlbfs の 2 MiB ページ"] --> B{"track_dirty_pages は"}
+    B -- "false" --> C["KVM は 2 MiB の EPT エントリを 1 個張る<br/>1 GiB を触るのに VM exit は 512 回<br/>TLB エントリ 1 個が 2 MiB をカバーする"]
+    B -- "true = KVM_MEM_LOG_DIRTY_PAGES" --> D["ダーティビットマップの粒度は 4 KiB<br/>2 MiB エントリでは「どこが書き換わったか」を区別できない"]
+    D --> E["KVM が huge mapping を分解し<br/>無条件に 4 KiB 粒度で EPT を張り直す"]
+    E --> F["1 GiB を触るのに VM exit は 262144 回<br/>= hugepages を指定した意味がなくなる"]
+```
+
 Firecracker のコードでも、ダーティページの走査は一貫してホストのページサイズ（4096）で行われている。`huge_pages.page_size()` が 2 MiB を返す設定でも、`dump_dirty` に渡すのは `host_page_size()` である。
 
 ### さらに 2M は UFFD 復元が必須
@@ -162,6 +171,17 @@ UFFD のページ供給は登録時のページサイズ単位で行う必要が
 - **起動レイテンシが最優先で、スナップショットはフルのみ、UFFD ハンドラを自前で持っている**なら `2M` を選ぶ。プールの事前確保という運用コストを払う価値がある。
 - **差分スナップショットを回す**なら `huge_pages` は `None` でよい。`2M` を指定しても効果が消えるだけで、hugetlbfs プールの管理コストと `SIGBUS` のリスクだけが残る。
 - **どちらとも決めきれない**なら `Transparent`。プールの事前確保が要らず、ファイル復元も通り、効かないときは静かに 4 KiB に落ちる。効果は小さいが、失敗モードが増えない。
+
+```mermaid
+flowchart TB
+    Q1{"差分スナップショットを回すか"}
+    Q1 -- "回す" --> N1["huge_pages = None<br/>2M を指定しても効果は消え、<br/>プール管理のコストと SIGBUS のリスクだけが残る"]
+    Q1 -- "回さない" --> Q2{"復元はどちらの経路か"}
+    Q2 -- "ファイルバックエンド" --> N2["2M はエラーで弾かれる<br/>Transparent か None を選ぶ"]
+    Q2 -- "UFFD ハンドラ" --> Q3{"hugetlbfs プールを<br/>自分で管理できるか"}
+    Q3 -- "できる" --> N3["huge_pages = 2M<br/>起動時間が最大 50% 改善"]
+    Q3 -- "できない" --> N4["Transparent<br/>プールの事前確保が要らず失敗モードも増えないが<br/>効果は限定的"]
+```
 
 **組み合わせの禁止を「型付きのエラー + テスト」で表現するのは真似する価値がある。** `HugetlbfsSnapshot` は単なる文字列エラーではなく専用のバリアントで、エラーメッセージが「Please use uffd.」と次の行動まで書いてある。しかも `test_load_snapshot_rejects_hugetlbfs_with_file_backend` がその分岐を守っている。設定の組み合わせ爆発が避けられないシステムでは、**不正な組み合わせに名前を付けてテストで固定する** ことで、後から片方の設定を触った人が気付ける。
 

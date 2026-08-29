@@ -10,29 +10,18 @@ sidebar:
 
 Firecracker の seccomp ポリシーは、コードではなく JSON で書かれている。そして実行時に JSON を読むのではなく、**ビルド時に BPF へコンパイルして実行ファイルに埋め込む**。
 
-```
-resources/seccomp/x86_64-unknown-linux-musl.json     宣言（人が読み書きする）
-        │
-        │  src/firecracker/build.rs (cargo build script)
-        │    └ seccompiler::compile_bpf()
-        │        ├ serde_json で BpfJson へ
-        │        ├ libseccomp (seccomp_init / seccomp_rule_add_array)
-        │        ├ seccomp_export_bpf → memfd → Vec<u64> として読み戻し
-        │        └ bitcode::serialize(BTreeMap<String, Vec<u64>>)
-        ▼
-$OUT_DIR/seccomp_filter.bpf                          直列化された BPF
-        │
-        │  src/firecracker/src/seccomp.rs
-        │    include_bytes!(concat!(env!("OUT_DIR"), "/seccomp_filter.bpf"))
-        ▼
-firecracker 実行ファイルの中の &'static [u8]
-        │
-        │  vmm::seccomp::deserialize_binary()  （サイズ上限 100 KB）
-        ▼
-BpfThreadMap = HashMap<String, Arc<Vec<u64>>>        "vmm" / "api" / "vcpu"
-        │
-        ▼
-各スレッドが自分で apply_filter()   →  ../per-thread-seccomp/
+```mermaid
+flowchart TB
+    A["resources/seccomp/x86_64-unknown-linux-musl.json<br/>宣言 — 人が読み書きする"] --> B["src/firecracker/build.rs (cargo build script)<br/>seccompiler::compile_bpf()"]
+    B --> B1["serde_json で BpfJson へ"]
+    B1 --> B2["libseccomp — seccomp_init / seccomp_rule_add_array"]
+    B2 --> B3["seccomp_export_bpf → memfd → 8 バイト単位の配列として読み戻す"]
+    B3 --> B4["bitcode::serialize でスレッド名 → BPF 命令列のマップにする"]
+    B4 --> C["OUT_DIR/seccomp_filter.bpf — 直列化された BPF"]
+    C --> D["include_bytes! で実行ファイルの中の静的バイト列にする"]
+    D --> E["deserialize_binary() — サイズ上限 100 KB"]
+    E --> F["BpfThreadMap — vmm / api / vcpu の 3 つが揃っているか検査"]
+    F --> G["各スレッドが自分で apply_filter() を呼ぶ"]
 ```
 
 ### JSON で書く
@@ -147,6 +136,16 @@ const DESERIALIZATION_BYTES_LIMIT: usize = 100_000;
 同じ分岐は「そのターゲット用の JSON が存在しない場合」にも走る。`resources/seccomp/` にあるのは `x86_64-unknown-linux-musl.json` と `aarch64-unknown-linux-musl.json` だけなので、GNU libc 向けにビルドすると自動的に `unimplemented.json` になる。どちらの場合も `cargo:warning=` でビルドログに警告は出るが、ビルド自体は成功する。
 
 つまり「seccomp が効いているかどうか」は、実行時のフラグだけでなく**どうビルドされたか**に依存する。`--no-seccomp` を付けていなくても、デバッグビルドなら守られていない。
+
+```mermaid
+flowchart TB
+    A["build.rs が DEBUG 環境変数を見る"] --> B{"デバッグビルドか、<br/>そのターゲット用の JSON が存在しないか"}
+    B -- "はい" --> C["resources/seccomp/unimplemented.json を使う<br/>default_action = allow、filter は空"]
+    C --> D["BPF プログラムはロードされるが<br/>どのルールにも一致しないので全 syscall が通る<br/>= 実質的に何も制限しない"]
+    B -- "いいえ" --> E["ターゲット別の JSON をコンパイルする"]
+    N["cargo:warning= は出るが、ビルド自体は成功する<br/>= 「seccomp が効いているか」は実行時のフラグだけでなく<br/>どうビルドされたかにも依存する"]
+    N -.-> C
+```
 
 ## ソースコードのどこか
 

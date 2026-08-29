@@ -24,30 +24,14 @@ KVM (Kernel-based Virtual Machine) の役割は、実はかなり狭い。
 
 KVM の API は `/dev/kvm` という 1 つのキャラクタデバイスに対する `ioctl(2)` として提供される。特徴的なのは、**ioctl が 3 階層のファイルディスクリプタに分かれている**ことだ。
 
-```
-    open("/dev/kvm", O_RDWR)
-              |
-              v
-    +---------------------+
-    |   system fd         |   KVM 全体に関わる操作
-    |   (kvm fd)          |   - KVM_GET_API_VERSION
-    +---------------------+   - KVM_CHECK_EXTENSION
-              |               - KVM_GET_SUPPORTED_CPUID
-              | KVM_CREATE_VM  - KVM_CREATE_VM
-              v
-    +---------------------+
-    |   vm fd             |   1 つの VM に関わる操作
-    |                     |   - KVM_SET_USER_MEMORY_REGION
-    +---------------------+   - KVM_CREATE_IRQCHIP / KVM_SET_TSS_ADDR
-              |               - KVM_IRQFD / KVM_IOEVENTFD
-              | KVM_CREATE_VCPU  - KVM_GET_DIRTY_LOG
-              v               - KVM_CREATE_VCPU
-    +---------------------+
-    |   vcpu fd           |   1 つの vCPU に関わる操作
-    |   (vCPU 数だけ)     |   - KVM_RUN
-    +---------------------+   - KVM_GET_REGS / KVM_SET_REGS
-                              - KVM_SET_CPUID2
-                              - KVM_GET_MSRS / KVM_SET_MSRS
+```mermaid
+flowchart TB
+    O["open('/dev/kvm', O_RDWR)"] --> S["system fd<br/>KVM 全体に関わる操作"]
+    S --- SL["KVM_GET_API_VERSION<br/>KVM_CHECK_EXTENSION<br/>KVM_GET_SUPPORTED_CPUID"]
+    S -- "KVM_CREATE_VM" --> V["vm fd<br/>1 つの VM に関わる操作"]
+    V --- VL["KVM_SET_USER_MEMORY_REGION<br/>KVM_CREATE_IRQCHIP / KVM_SET_TSS_ADDR<br/>KVM_IRQFD / KVM_IOEVENTFD<br/>KVM_GET_DIRTY_LOG"]
+    V -- "KVM_CREATE_VCPU (vCPU 数だけ)" --> C["vcpu fd<br/>1 つの vCPU に関わる操作"]
+    C --- CL["KVM_RUN<br/>KVM_GET_REGS / KVM_SET_REGS<br/>KVM_SET_CPUID2<br/>KVM_GET_MSRS / KVM_SET_MSRS"]
 ```
 
 なぜこう分かれているのか。

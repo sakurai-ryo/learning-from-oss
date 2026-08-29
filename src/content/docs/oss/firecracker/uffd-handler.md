@@ -12,22 +12,24 @@ sidebar:
 
 `PUT /snapshot/load` で `backend_type: "Uffd"` を選ぶと、`backend_path` は**メモリファイルではなく Unix ドメインソケットのパス**になる。ソケットの listen 側は Firecracker ではなく、ユーザが用意する外部プロセスである。
 
-```
-[ページフォルトハンドラ (ユーザが書く) ]        [ Firecracker ]
-   1. UDS を bind して listen
-   2. メモリファイルを自分で mmap
-                                    <-- PUT /snapshot/load
-                                        3. 匿名 mmap でゲストメモリを確保
-                                        4. userfaultfd を作る
-                                        5. 全領域を uffd に register
-                                        6. UDS に connect
-   <-- SCM_RIGHTS で uffd の fd -------
-   <-- JSON で領域対応表 --------------
-                                        7. 以降 UDS では何も通信しない
-                                           普通に復元処理を続ける
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as ページフォルトハンドラ<br/>(ユーザが書く)
+    participant F as Firecracker
 
-   8. uffd を poll し、pagefault イベントを読む
-   9. UFFDIO_COPY でページを埋める
+    H->>H: 1. UDS を bind して listen
+    H->>H: 2. メモリファイルを自分で mmap
+    Note over F: PUT /snapshot/load — backend_type = Uffd
+    F->>F: 3. 匿名 mmap でゲストメモリを確保
+    F->>F: 4. userfaultfd を作る
+    F->>F: 5. 全領域を uffd に register
+    F->>H: 6. UDS に connect
+    F->>H: SCM_RIGHTS で uffd の fd を渡す
+    F->>H: JSON で領域対応表<br/>ホスト仮想アドレス / サイズ / ファイル内オフセット / ページサイズ
+    Note over F,H: 7. 以降 UDS では何も通信しない<br/>Firecracker は普通に復元処理を続ける
+    H->>H: 8. uffd を poll し、pagefault イベントを読む
+    H->>F: 9. UFFDIO_COPY でページを埋める
 ```
 
 **Firecracker はページを 1 枚も埋めない。** ハンドシェイクで fd と地図を渡したら、あとは何もしない。ドキュメントも明記している。
@@ -261,13 +263,16 @@ fd と地図を渡した後、UDS では何も通信しない。fd を渡した�
 
 前述のとおり、Firecracker が uffd の fd を保持し続けるのは、ハンドラが死んだときにメモリが匿名メモリとして振る舞い始めるのを防ぐためである。これは**壊れ方の選択**である。
 
-```
-fd を手放していたら:  ハンドラ死亡 -> 登録解除 -> ゼロページが供給される
-                      -> ゲストは動き続けるが、メモリの中身が消えている
-                      -> 気づけない。データが壊れる。
-
-fd を握っていると:    ハンドラ死亡 -> 登録は生きたまま -> フォルトが解決されない
-                      -> vCPU が止まる -> 外から観測できる
+```mermaid
+flowchart TB
+    A["ページフォルトハンドラが死んだ"] --> B{"Firecracker は uffd の fd を<br/>持ち続けているか"}
+    B -- "手放していたら" --> C["最後の fd が閉じられ、uffd の登録が解除される"]
+    C --> D["未マップのページをカーネルがゼロページとして供給する"]
+    D --> E["ゲストは何事もなかったように動き続け、<br/>中身が全部ゼロのメモリを読む<br/>= 気づけないデータ破壊"]
+    B -- "握り続けている (実際の実装)" --> F["登録は生きたまま、フォルトを解決する者がいない"]
+    F --> G["vCPU スレッドが永久に止まる<br/>= 外から観測できるハング"]
+    N["サイレントなデータ破壊より、明白なハングのほうがマシ<br/>malicious_handler がこの性質の回帰テストになっている"]
+    N -.-> G
 ```
 
 **サイレントなデータ破壊より、明白なハングのほうがマシ**という判断である。統合テストの docstring がこれをそのまま述べており、`malicious_handler` はこの性質を壊さないための回帰テストとして存在している。
