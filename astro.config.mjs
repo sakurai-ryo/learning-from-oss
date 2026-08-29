@@ -18,6 +18,14 @@ export default defineConfig({
       locales: {
         root: { label: "日本語", lang: "ja" },
       },
+      // 検索エンジンのインデックス対象にしない。robots.txt で Disallow にすると
+      // このタグ自体がクロールされず noindex が効かないため、クロールは許可する
+      head: [
+        {
+          tag: "meta",
+          attrs: { name: "robots", content: "noindex, nofollow" },
+        },
+      ],
       social: [{ icon: "github", label: "GitHub", href: repoUrl }],
       editLink: { baseUrl: `${repoUrl}/edit/main/` },
       lastUpdated: true,
