@@ -14,6 +14,37 @@ sidebar:
 
 ## ソースコードのどこか
 
+全体の流れはこうなる。旧リーダーが「降りる」のではなく、次の相手に「今すぐ立候補しろ」と指示するのが要点だ。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as 運用者
+    participant L as n1 (旧リーダー, 任期 5)
+    participant T as n2 (移譲先)
+    participant C as n3
+
+    Op->>L: MsgTransferLeader (n2 へ譲れ)
+    Note over L: leadTransferee=n2 を記録<br/>以降の提案は ErrProposalDropped で断る
+    alt n2 のログが追いついていない
+        L->>T: MsgApp (残りのエントリ)
+        T-->>L: MsgAppResp index=末尾
+    end
+    Note over L: Match[n2] == lastIndex になった
+    L->>T: MsgTimeoutNow
+    Note over T: 選挙タイムアウトを待たずに即立候補<br/>任期を 6 に上げる (PreVote は使わない)
+    T->>L: MsgVote 任期 6, Context=campaignTransfer
+    T->>C: MsgVote 任期 6, Context=campaignTransfer
+    Note over L,C: Context があるのでリースを無視して投票
+    L-->>T: MsgVoteResp 賛成
+    C-->>T: MsgVoteResp 賛成
+    Note over T: 過半数 → リーダーに (任期 6)
+    T->>L: MsgApp 任期 6
+    Note over L: 任期 6 を見てフォロワーへ
+```
+
+停止時間は `MsgTimeoutNow` から新リーダー確定までの 1 往復だけになる。旧リーダーが黙って落ちる場合は、フォロワーの選挙タイムアウト (既定で ハートビート 10 回分) を待たされるので、桁が違う。
+
 移譲の要求は `MsgTransferLeader` で、フォロワーが受けたらリーダーに転送される ([`raft.go#L1723-L1729`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L1723-L1729))。
 
 ```go title="raft.go"

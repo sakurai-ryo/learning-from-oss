@@ -29,6 +29,26 @@ S4 が復帰:
   → 新たに選挙が起き、その間クラスタは書き込みを受け付けられない
 ```
 
+メッセージの流れで見ると、被害が出るのは 1 通目だけだ。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S4 as S4 (分断から復帰, 任期 21)
+    participant S1 as S1 (リーダー, 任期 5)
+    participant S2 as S2
+    participant S3 as S3
+
+    S4->>S1: MsgVote (任期 21)
+    S4->>S2: MsgVote (任期 21)
+    S4->>S3: MsgVote (任期 21)
+    Note over S1,S3: 21 > 5。「大きい任期を見たら降りる」<br/>→ 3 台とも任期 21 のフォロワーになる
+    S1-->>S4: MsgVoteResp (拒否 / ログが古い)
+    S2-->>S4: MsgVoteResp (拒否)
+    S3-->>S4: MsgVoteResp (拒否)
+    Note over S1,S3: S4 は勝てない。しかしリーダーはもういない<br/>選挙が終わるまで書き込みを受け付けられない
+```
+
 安全性は壊れていない。しかし **何も悪いことをしていないクラスタが、勝ち目のないノードの復帰だけで一時停止する**。分断が繰り返し起きる環境では、これが継続的な可用性の低下になる。
 
 原因は、任期の吊り上げが **勝敗の判定より先に起きる** ことにある。S4 は「自分は勝てない」ことを、任期を上げてしまった後にしか知れない。
@@ -228,6 +248,28 @@ func (r *raft) becomePreCandidate() {
      │
      └── 過半数が拒否 ────► becomeFollower(r.Term, None)
                               (任期は T のまま。クラスタに影響なし)
+```
+
+PreVote を有効にすると、同じ場面がこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S4 as S4 (分断から復帰, 任期 20)
+    participant S1 as S1 (リーダー, 任期 5)
+    participant S2 as S2
+    participant S3 as S3
+
+    Note over S4: 選挙タイムアウト。ただし任期は 20 のまま上げない
+    S4->>S1: MsgPreVote (もし任期 21 にしたら勝てますか)
+    S4->>S2: MsgPreVote
+    S4->>S3: MsgPreVote
+    Note over S1,S3: 問い合わせなので任期は上げない<br/>ログを比べると S4 の方が古い
+    S1-->>S4: MsgPreVoteResp (拒否)
+    S2-->>S4: MsgPreVoteResp (拒否)
+    S3-->>S4: MsgPreVoteResp (拒否)
+    Note over S4: 勝てないと分かったのでフォロワーのまま<br/>任期は 20 のまま。ディスク書き込みもなし
+    Note over S1,S3: リーダーは S1 のまま。書き込みは止まらない
 ```
 
 分断から復帰した S4 は、PreVote の段階で拒否される。ログが古いので `isUpToDate` に落ちるからだ。**任期は上がらず、S1〜S3 は何も気づかない**。

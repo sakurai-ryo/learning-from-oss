@@ -60,5 +60,6 @@ Conventions when adding or editing content:
 - Architecture walkthrough pages are an alternative page shape for chapters that also map a codebase's internals top to bottom, structured as この層の責務 / 主要な型とその関係 / 処理の流れ / 守られている不変条件 / つまずきどころ. They cover wiring and control flow and link out to lesson pages for the design rationale. `src/content/docs/oss/turso/` uses both shapes.
 - Every lesson page needs a `group` frontmatter field. It becomes a nested sidebar group inside the chapter (see `src/starlight-route-data.ts`), and must match the grouping in the chapter index's 読む順番 section. Group order follows the lowest `sidebar.order` in each group.
 - Link to source with a URL that includes a tag or commit hash.
+- Diagrams go in ```mermaid fences (rendered client-side by `astro-mermaid`). Use them for message flows (`sequenceDiagram`), role/state transitions (`stateDiagram-v2`), and dependency maps (`flowchart`). Keep ASCII art in code fences for log/byte layouts, where alignment carries the meaning. Mermaid syntax errors surface only in the browser, so the build will not catch them.
 - `src/content/docs/oss/sample/` is the template. It is `draft: true` and excluded from production builds; copy it and drop `draft`.
 - Write content in Japanese. Prefer local checkouts (`ghq list --full-path`) when reading OSS source.

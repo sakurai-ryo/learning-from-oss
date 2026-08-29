@@ -174,6 +174,24 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 
 ## 状態遷移
 
+3 つの状態と、その間を動かす出来事をまとめるとこうなる。
+
+```mermaid
+stateDiagram-v2
+    Probe: StateProbe<br/>1 通だけ送って様子を見る
+    Replicate: StateReplicate<br/>楽観的に流し続ける
+    Snapshot: StateSnapshot<br/>送るのをやめてスナップショット待ち
+
+    [*] --> Probe: リーダーになった直後<br/>(相手のログの状態が不明)
+    Probe --> Replicate: MsgAppResp が受理された<br/>(一致点が見つかった)
+    Probe --> Snapshot: 送るべきエントリが圧縮済み
+    Replicate --> Probe: MsgAppResp が拒否された<br/>/ 到達不能の報告
+    Replicate --> Snapshot: 送るべきエントリが圧縮済み
+    Snapshot --> Probe: スナップショットが届いた<br/>/ 中止された
+```
+
+`StateReplicate` から `StateLeader` 相当の「安定」に落ち着くのではなく、拒否が 1 回来れば `StateProbe` に戻る。**楽観的に進めて、外れたら確実な方法に落とす** という形が状態機械として書かれている。
+
 遷移関数は 3 つで、どれも `ResetState` を呼ぶ ([`tracker/progress.go#L121-L163`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/tracker/progress.go#L121-L163))。
 
 ```go title="tracker/progress.go"

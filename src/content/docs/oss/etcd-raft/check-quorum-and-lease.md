@@ -123,6 +123,32 @@ func (p *ProgressTracker) QuorumActive() bool {
 
 ログメッセージに「残り何 tick でリースが切れるか」まで出している。この分岐に入ったことが運用上の異常に見えるので、判断材料を出しておく、という意図だろう。
 
+2 つの規則が噛み合っているところを図にするとこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S4 as S4 (分断から復帰, 任期 21)
+    participant L as S1 (リーダー, 任期 5)
+    participant B as S2
+    participant C as S3
+
+    Note over L: CheckQuorum: 直近の electionTimeout で<br/>過半数から声を聞けているか自己点検
+    L->>B: MsgHeartbeat
+    L->>C: MsgHeartbeat
+    B-->>L: MsgHeartbeatResp
+    C-->>L: MsgHeartbeatResp
+    Note over L: 過半数が生きている → リーダーを続ける
+
+    S4->>B: MsgVote 任期 21
+    S4->>C: MsgVote 任期 21
+    Note over B,C: リースが生きている (最近 S1 から聞いた)<br/>→ 任期を上げず、返事もせず、捨てる
+    Note over S4: 応答が来ないまま。任期 21 は誰にも伝わらない
+    Note over L: S1 はリーダーのまま。書き込みは止まらない
+```
+
+リーダー側の自己点検がないと、この「捨てる」が危険になる。S1 が本当に死んでいた場合、S2・S3 はリースが切れるまで誰にも投票せず、その間クラスタは止まる。**リーダーが自分で降りる保証があるから、フォロワーは安心して無視できる**。
+
 これが [PreVote のページ](../prevote/) で見た問題を、別の角度から塞ぐ。復帰したノードが `MsgVote` を送っても、リーダーが生きている限り誰も任期を上げない。PreVote が「候補者側で気づく」なら、CheckQuorum は「投票者側で無視する」ことになる。
 
 ### 例外の例外: 移譲は強制する

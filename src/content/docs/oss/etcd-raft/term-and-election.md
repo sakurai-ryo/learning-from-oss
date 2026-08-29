@@ -32,6 +32,27 @@ sidebar:
 
 この 3 行が Raft の骨格になっている。**「大きい任期を見たら無条件で降りる」** ため、分断から復帰した古いリーダーは、最初のメッセージ 1 通で自動的にフォロワーに戻る。ネットワーク分断の検知も、リーダーの二重化の解消も、専用の仕組みを持たずにここで片付く。
 
+この 2 行がどう効くかを、いちばん怖いシナリオで見ておく。分断されていた古いリーダーが復帰して、まだ自分がリーダーのつもりでいる場合だ。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as n1 (旧リーダー, 任期 2)
+    participant F as n2 (フォロワー, 任期 5)
+    participant N as n3 (現リーダー, 任期 5)
+
+    Note over O: 分断されている間に<br/>クラスタは任期 5 に進んでいた
+    O->>F: MsgApp (任期 2)
+    Note over F: 2 < 5 なので古い。中身は見ない
+    F-->>O: MsgAppResp (任期 5, Reject)
+    Note over O: 5 > 2 を見た瞬間に<br/>currentTerm=5 にしてフォロワーへ降りる
+    N->>O: MsgHeartbeat (任期 5)
+    O-->>N: MsgHeartbeatResp (任期 5)
+    Note over O,N: 二重リーダーは 1 往復で解消した
+```
+
+「分断を検知する」「リーダーが 2 人いることに気づく」といった専用の仕組みはどこにもない。**任期の大小比較だけで片付いている**。
+
 `etcd-io/raft` では、この規則が `Step` 関数の冒頭にそのまま書かれている ([`raft.go#L1096-L1132`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L1096-L1132))。
 
 ```go title="raft.go"
@@ -95,6 +116,30 @@ func (r *raft) tickElection() {
 2. **候補者 (candidate)** になる。
 3. 自分に投票する。
 4. 他の全ノードに **投票要求 (RequestVote)** を送る。
+
+3 台のクラスタでリーダーが落ちた場合の一部始終はこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as n1 (フォロワー)
+    participant B as n2 (フォロワー)
+    participant C as n3 (旧リーダー, 任期 4)
+
+    Note over C: 落ちる
+    Note over A: 選挙タイムアウト<br/>任期を 5 に上げ、自分に投票
+    A->>B: MsgVote (任期 5, 自分のログ末尾)
+    A->>C: MsgVote (任期 5)
+    Note over B: 任期 5 は未投票<br/>かつ n1 のログは自分以上に新しい
+    B-->>A: MsgVoteResp (賛成)
+    Note over A: 自分の 1 票 + n2 の 1 票 = 2/3<br/>過半数に到達
+    Note over A: リーダーになり、空エントリを 1 つ書く
+    A->>B: MsgApp (任期 5, 空エントリ)
+    A->>C: MsgApp (任期 5)
+    B-->>A: MsgAppResp
+```
+
+n3 は落ちたままだが、3 台中 2 台で過半数なので選挙は成立する。「全員の返事を待たない」のが定足数を使う意味だ。最後の空エントリについては、なぜそれが要るのかを [コミット規則のページ](../commit-rule/) で扱う。
 
 `etcd-io/raft` では `becomeCandidate` と `campaign` に分かれている ([`raft.go#L902-L915`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L902-L915))。
 
@@ -191,6 +236,29 @@ func (r *raft) reset(term uint64) {
 ```
 
 **誰も過半数を取れない (分割投票)**。3 台が同時にタイムアウトして同時に立候補すると、票が割れて誰も勝てない。この場合、また選挙タイムアウトを待って、任期を増やしてやり直す。
+
+分割投票は図にするとこうなる。誰も過半数に届かないまま任期だけが消費される。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as n1
+    participant B as n2
+    participant C as n3
+
+    Note over A,C: 3 台が同時に選挙タイムアウト
+    Note over A: 任期 5 の候補者 (自分に 1 票)
+    Note over B: 任期 5 の候補者 (自分に 1 票)
+    Note over C: 任期 5 の候補者 (自分に 1 票)
+    A->>B: MsgVote (任期 5)
+    B->>C: MsgVote (任期 5)
+    C->>A: MsgVote (任期 5)
+    Note over B: 既に自分に投票済み → 拒否
+    B-->>A: MsgVoteResp (拒否)
+    C-->>B: MsgVoteResp (拒否)
+    A-->>C: MsgVoteResp (拒否)
+    Note over A,C: 全員が 1 票のまま。誰も 2 票に届かない<br/>任期 5 はリーダー不在で終わる
+```
 
 分割投票が毎回起きると永久に決まらない。これを防ぐのが **選挙タイムアウトのランダム化** だ ([`raft.go#L2053-L2055`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L2053-L2055))。
 

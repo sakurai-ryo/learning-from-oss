@@ -45,6 +45,31 @@ index   │   1   │   2   │   3   │   4   │
         状態機械 (キーバリューストア)
 ```
 
+3 台に広げるとこうなる。ログを配るところだけが通信で、状態機械はそれぞれのノードが自分のログを読んで勝手に動かす。
+
+```mermaid
+flowchart TB
+    C(["クライアント"]) -- "SET x 1" --> L
+
+    subgraph n1["ノード 1 (リーダー)"]
+        direction LR
+        L["ログ<br/>1:SET x 1<br/>2:SET y 2<br/>3:DEL x"] --> S1["状態機械<br/>y=2"]
+    end
+    subgraph n2["ノード 2"]
+        direction LR
+        L2["ログ<br/>1:SET x 1<br/>2:SET y 2<br/>3:DEL x"] --> S2["状態機械<br/>y=2"]
+    end
+    subgraph n3["ノード 3"]
+        direction LR
+        L3["ログ<br/>1:SET x 1<br/>2:SET y 2<br/>3:DEL x"] --> S3["状態機械<br/>y=2"]
+    end
+
+    L -- "ログを配る" --> L2
+    L -- "ログを配る" --> L3
+```
+
+**ログの中身が一致していれば、それを順に適用した状態機械も一致する**。状態機械の中身そのものを比べたり同期したりする必要はない。
+
 つまり **「データを一致させる」問題が「ログの各位置に何が入るかを一致させる」問題に還元される**。この還元が Raft の出発点だ。以降、Raft は状態機械の中身に一切関心を持たない。エントリの `Data` はただのバイト列で、その意味を解釈するのは利用側の仕事になる。
 
 `etcd-io/raft` でも、エントリは本当にこれだけの構造をしている ([`raftpb/raft.proto#L12-L17`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raftpb/raft.proto#L12-L17))。
@@ -149,6 +174,24 @@ Raft のノードは、常に次の 3 つのうちどれかの役割を持つ。
 - **リーダー (leader)**: クライアントの提案を受け付け、ログに書き、フォロワーに配る。同時に 1 人だけ。
 - **フォロワー (follower)**: 受け身。リーダーから来たものを自分のログに書き、投票要求に答える。
 - **候補者 (candidate)**: 選挙中の一時的な役割。リーダーが落ちたと判断したフォロワーがここに移る。
+
+この 3 つの間の行き来には決まった形がある。**全ノードはフォロワーとして起動する** し、リーダーになる道は「候補者として過半数の票を得る」1 本しかない。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Follower: 起動 / 再起動
+    Follower --> Candidate: 選挙タイムアウト<br/>リーダーの声が一定時間途絶えた
+    Candidate --> Candidate: 票が割れた<br/>任期を上げてやり直す
+    Candidate --> Leader: 過半数の票を得た
+    Candidate --> Follower: この任期のリーダーが決まった<br/>または、より大きい任期を見た
+    Leader --> Follower: より大きい任期を見た
+    note right of Leader
+        リーダーからリーダーへの遷移はない。
+        降りるときは必ずフォロワーを経由する
+    end note
+```
+
+矢印がこれだけしかないことを覚えておくと、後のページで「この状況ではどこにいるか」を追いやすい。リーダーから候補者への直行がないこと、リーダーが自発的に降りる矢印がないこと (降りるのは常に「より大きい任期を見た」とき) が特に効いてくる。
 
 `etcd-io/raft` にはもう 1 つ `StatePreCandidate` があるが、これは無駄な選挙を減らすための拡張なので [PreVote のページ](../prevote/) まで置いておく ([`raft.go#L50-L57`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L50-L57))。
 

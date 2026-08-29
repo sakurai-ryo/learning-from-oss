@@ -41,6 +41,33 @@ S1 は古い値 x=1 を返す。
 3. 状態機械の適用位置が `readIndex` に追いつくまで待つ。
 4. 状態機械を読んで答える。
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CL as クライアント
+    participant L as n1 (リーダー)
+    participant B as n2
+    participant C as n3
+    participant SM as n1 の状態機械
+
+    CL->>L: 読み取り要求 (GET x)
+    Note over L: 現在のコミット位置を控える<br/>readIndex = 42
+    par
+        L->>B: MsgHeartbeat
+    and
+        L->>C: MsgHeartbeat
+    end
+    B-->>L: MsgHeartbeatResp
+    Note over L: 自分を含めて 2/3 = 過半数が応答<br/>→ 今も自分がリーダーだと確定
+    C-->>L: MsgHeartbeatResp
+    Note over SM: applied が 42 に追いつくのを待つ
+    L->>SM: x を読む
+    SM-->>L: x = 1
+    L-->>CL: x = 1
+```
+
+ログにエントリを 1 件も書いていないことに注目してほしい。ディスク書き込みは発生せず、コストはハートビート 1 往復だけになる。
+
 手順 2 が「自分がリーダーであること」の確認になる。過半数が自分をリーダーとして扱っているなら、他に同じ任期のリーダーはいない。より新しい任期のリーダーがいたなら、その過半数と交差するので、ハートビートが拒否される。
 
 手順 3 が「その時点までの書き込みが見える」ことの保証になる。`readIndex` はコミット済みの位置なので、それより前の書き込みは全部そこに含まれている。

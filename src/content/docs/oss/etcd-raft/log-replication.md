@@ -17,6 +17,37 @@ sidebar:
 3. 過半数のフォロワーがそのエントリを自分のログに書いたと答えたら、そのエントリを **コミット** する。
 4. 状態機械に適用して、クライアントに応答する。
 
+3 台のクラスタで、1 件の書き込みが返るまでを通しで見るとこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CL as クライアント
+    participant L as n1 (リーダー)
+    participant B as n2
+    participant C as n3
+
+    CL->>L: SET x 1
+    Note over L: ログ末尾に追加<br/>index=5, term=3
+    par n2 へ
+        L->>B: MsgApp prev=(4,t3) entries=[5:t3] commit=4
+    and n3 へ
+        L->>C: MsgApp prev=(4,t3) entries=[5:t3] commit=4
+    end
+    Note over B: index 4 の任期が t3 で一致 → 追記
+    B-->>L: MsgAppResp index=5
+    Note over L: Match[n2]=5。自分と合わせて 2/3<br/>= 過半数 → index 5 をコミット
+    L->>L: 状態機械に適用 (x=1)
+    L-->>CL: OK
+    C-->>L: MsgAppResp index=5
+    Note over C: 遅れて届いても結果は変わらない
+    L->>B: MsgApp commit=5
+    L->>C: MsgApp commit=5
+    Note over B,C: 次のメッセージでコミット位置を知り<br/>自分も状態機械に適用する
+```
+
+見どころは 2 つある。1 つは **クライアントへの応答が、全ノードの返事を待たずに返る** こと。過半数が書けた時点で確定なので、n3 の返事は待たない。もう 1 つは **フォロワーが「コミットされた」と知るのが次のメッセージ** だということ。専用の通知はなく、`commit` フィールドに相乗りする。
+
 `etcd-io/raft` でエントリを作っているのが `appendEntry` だ ([`raft.go#L812-L822`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L812-L822))。
 
 ```go title="raft.go"
@@ -154,6 +185,27 @@ prev=(4,t2) → 拒否
 prev=(3,t2) → 拒否
 prev=(2,t1) → 一致！ ここから [3:t2][4:t2][5:t3] で上書き
 ```
+
+メッセージのやり取りとして書くとこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as n1 (リーダー)
+    participant C as n3 (ログが食い違っている)
+
+    Note over L: Next[n3]=5 と推測している
+    L->>C: MsgApp prev=(4,t2) entries=[5:t3]
+    Note over C: 自分の index 4 は t9。不一致
+    C-->>L: MsgAppResp Reject RejectHint=2
+    Note over L: 推測が外れた。Next を戻す
+    L->>C: MsgApp prev=(2,t1) entries=[3:t2,4:t2,5:t3]
+    Note over C: index 2 は t1 で一致<br/>3 以降を捨ててリーダーの内容で上書き
+    C-->>L: MsgAppResp index=5
+    Note over L: Match[n3]=5, Next[n3]=6
+```
+
+`RejectHint` があるので 1 つずつ戻すとは限らない。フォロワーが「このあたりまで戻れば一致するはず」を計算して返してくる。この計算については [探索の最適化のページ](../probe-optimization/) で扱う。
 
 ここで重要なのが **リーダーは自分のログを絶対に書き換えない** という規則だ。合わせるのは常にフォロワー側になる。「リーダーのログが正しい」を無条件の前提にしてよいのは、[安全性のページ](../safety/) で扱う選挙制限があるからだ。
 

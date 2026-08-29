@@ -141,6 +141,33 @@ for {
 	Advance()
 ```
 
+同期モードと非同期モードの違いは、待ち合わせの位置にある。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as 利用側のループ
+    participant R as raft
+    participant AT as 追記スレッド
+    participant AP as 適用スレッド
+    participant N as ネットワーク
+
+    R-->>App: Ready{Messages: [...]}
+    Note over App: 宛先で振り分けるだけ。どれも待たない
+    App->>AT: MsgStorageAppend (To=LocalAppendThread)
+    App->>AP: MsgStorageApply (To=LocalApplyThread)
+    App->>N: 他ノード宛の MsgApp など
+
+    par 追記スレッド
+        AT->>AT: Entries と HardState を fsync
+        AT->>R: MsgStorageAppendResp
+        Note over R: ここで初めて「永続化済み」として扱い<br/>msgsAfterAppend に溜めた返答を解放する
+    and 適用スレッド
+        AP->>AP: CommittedEntries を状態機械に適用
+        AP->>R: MsgStorageApplyResp
+    end
+```
+
 `Advance()` の役目 —「前の `Ready` の処理が終わった」を伝えること — が、`MsgStorageAppendResp` と `MsgStorageApplyResp` に置き換わる。**関数呼び出しがメッセージになると、非同期にできる** という、この節全体の主題そのものだ。
 
 ## 現れる ABA 問題

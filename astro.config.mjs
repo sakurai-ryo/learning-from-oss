@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import mermaid from "astro-mermaid";
 
 const repoUrl = "https://github.com/sakurai-ryo/learning-from-oss";
 
@@ -10,6 +11,9 @@ export default defineConfig({
   site: "https://sakurai-ryo.github.io",
   base: "/learning-from-oss",
   integrations: [
+    // Starlight より前に置く必要がある。後ろだと Markdown の変換が先に走り、
+    // mermaid のコードブロックが通常のコードブロックとして確定してしまう
+    mermaid({ theme: "neutral", autoTheme: true, enableLog: false }),
     starlight({
       title: "Learning from OSS",
       description:

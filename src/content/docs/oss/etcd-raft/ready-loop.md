@@ -94,6 +94,33 @@ type Ready struct {
 
 `Ready` を受け取り、書き、送り、適用し、`Advance()` で「次をください」と伝える。
 
+このループを、ライブラリ・利用側・外の世界の 3 者のやり取りとして描くとこうなる。**ライブラリの側から外に出ていく矢印が 1 本もない** のが要点だ。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant N as ネットワーク<br/>(他ノード)
+    participant App as 利用側のループ
+    participant R as raft<br/>(状態機械)
+    participant D as ディスク
+    participant SM as 状態機械<br/>(KVS など)
+
+    N->>App: 受信した MsgApp
+    App->>R: Step(msg)
+    Note over R: 状態を進めるだけ。<br/>I/O は 1 回もしない
+    App->>R: Ready()
+    R-->>App: Ready{HardState, Entries, Messages,<br/>CommittedEntries, Snapshot}
+
+    App->>D: HardState と Entries を書く
+    D-->>App: 完了
+    App->>N: Messages を送る
+    App->>SM: CommittedEntries を適用
+    App->>R: Advance()
+    Note over R: 次の Ready を組み立ててよい
+```
+
+利用側は「書く」「送る」「適用する」の 3 つを自分の都合で実装できる。ディスクに書くのを batch にしても、送信を並列にしても、適用を別 goroutine に投げてもいい。**ライブラリはその選択に一切関与しない**。
+
 ## Ready の組み立て
 
 `Ready` を組み立てているのは `readyWithoutAccept` だ ([`rawnode.go#L137-L169`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/rawnode.go#L137-L169))。

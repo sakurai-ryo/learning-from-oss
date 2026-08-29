@@ -24,6 +24,26 @@ sidebar:
 
 残る 2 つが本題だ。**Leader Completeness が成り立てば State Machine Safety は自動的に従う** ので、実質は Leader Completeness ひとつを示せばよい。
 
+依存関係を図にすると、どこが証明の要かがはっきりする。
+
+```mermaid
+flowchart TB
+    R1["1 任期 1 票"] --> ES["Election Safety<br/>各任期のリーダーは高々 1 人"]
+    R2["過半数の交差性<br/>任意の 2 つの過半数は 1 台以上を共有する"] --> ES
+    R3["複製時の一致検査<br/>直前の (index, term) を照合"] --> LM["Log Matching<br/>同じ index に同じ term なら、そこまで全部同じ"]
+    R4["選挙制限<br/>末尾 (term, index) が自分以上のときだけ投票"] --> LC
+    R2 --> LC["Leader Completeness<br/>コミット済みは、以降の全リーダーが持つ"]
+    LM --> LC
+    ES --> LC
+    LC --> SMS["State Machine Safety<br/>同じ index には同じものしか適用されない"]
+    R5["Leader Append-Only<br/>リーダーは自分のログを追記しかしない"] --> SMS
+
+    style LC stroke-width:3px
+    style R4 stroke-width:3px
+```
+
+太くしてある 2 つ、**選挙制限** と **Leader Completeness** が中心だ。他は既に見たか、実装上の約束にすぎない。
+
 ## 選挙制限
 
 Leader Completeness を成り立たせているのが **選挙制限 (election restriction)** だ。
@@ -69,6 +89,26 @@ func (l *raftLog) isUpToDate(their entryID) bool {
 もし Leader Completeness が破れるなら、T より大きいある任期 U で、E を持たないリーダー L が選ばれたことになる。U を、そのような任期のうち最小のものとする。
 
 L は過半数の票 `Q_L` で選ばれた。`Q_E` と `Q_L` は両方とも過半数なので、少なくとも 1 台を共有する。その 1 台を V と呼ぶ。
+
+```mermaid
+flowchart LR
+    subgraph QE["Q_E: E を書いた過半数"]
+        direction TB
+        E1["S1"]
+        E2["S2"]
+    end
+    subgraph V["V"]
+        direction TB
+        VV["S3<br/>E を持つ &<br/>L に投票した"]
+    end
+    subgraph QL["Q_L: L に投票した過半数"]
+        direction TB
+        L1["S4"]
+        L2["S5"]
+    end
+    QE --- V
+    V --- QL
+```
 
 - V は `Q_E` に属するので、E を持っている。
 - V は `Q_L` に属するので、L に投票した。つまり **L のログは V のログ以上に新しい** と判定した。

@@ -90,6 +90,46 @@ func MustSync(st, prevst *pb.HardState, entsnum int) bool {
 
 順序が逆だと壊れる。「投票します」と答えた直後に落ちて、投票を忘れて復帰し、同じ任期で別の候補者に投票したら、リーダーが 2 人になる。
 
+壊れる順序と正しい順序を並べるとこうなる。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C1 as n1 (候補者, 任期 5)
+    participant F as n2
+    participant D as n2 のディスク
+    participant C2 as n3 (候補者, 任期 5)
+
+    Note over F,D: 危険な順序: 先に返事を送ってしまう
+    C1->>F: MsgVote (任期 5)
+    F-->>C1: MsgVoteResp (賛成)
+    F->>D: votedFor=n1 を書く…
+    Note over F: 書き終わる前に落ちる
+    Note over F: 再起動。votedFor を覚えていない
+    C2->>F: MsgVote (任期 5)
+    F-->>C2: MsgVoteResp (賛成)
+    Note over C1,C2: 任期 5 に 2 人のリーダーが立ちうる
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C1 as n1 (候補者, 任期 5)
+    participant F as n2
+    participant D as n2 のディスク
+    participant C2 as n3 (候補者, 任期 5)
+
+    Note over F,D: 正しい順序: 書いてから返事を送る
+    C1->>F: MsgVote (任期 5)
+    F->>D: votedFor=n1 を fsync
+    D-->>F: 完了
+    F-->>C1: MsgVoteResp (賛成)
+    Note over F: ここで落ちても votedFor は残る
+    C2->>F: MsgVote (任期 5)
+    Note over F: 既に n1 に投票済み
+    F-->>C2: MsgVoteResp (拒否)
+```
+
 `etcd-io/raft` はこの規則を、**メッセージを 2 つのキューに分ける** ことで強制している ([`raft.go#L545-L594`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L545-L594))。
 
 ```go title="raft.go"

@@ -97,6 +97,22 @@ message Snapshot {
 	}
 ```
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as n1 (リーダー)
+    participant F as n3 (長く落ちていた)
+
+    Note over L: ログの先頭は index 5000 まで圧縮済み<br/>Next[n3] = 101
+    Note over L: prev = index 100 の任期を引こうとする<br/>→ ErrCompacted。一致検査に使う材料がない
+    L->>F: MsgSnap (index 5000 までの状態のコピー + ConfState)
+    Note over F: 自分のログを丸ごと捨てて<br/>スナップショットで置き換える
+    F-->>L: MsgAppResp index=5000
+    Note over L: Match[n3]=5000, Next[n3]=5001<br/>ここから普通の MsgApp に戻る
+    L->>F: MsgApp prev=(5000,tX) entries=[5001...]
+    F-->>L: MsgAppResp index=5001
+```
+
 `term(prevIndex)` が `ErrCompacted` を返した、つまり「一致検査に使うべきエントリの任期がもう分からない」場合だ。このとき、ログの続きを送っても相手は検査できないので、状態そのものを送るしかない。
 
 `maybeSendSnapshot` は少し慎重に振る舞う ([`raft.go#L666-L692`](https://github.com/etcd-io/raft/blob/af7bf26c25cacf88c26db8751e78af2badbda5d8/raft.go#L666-L692))。
