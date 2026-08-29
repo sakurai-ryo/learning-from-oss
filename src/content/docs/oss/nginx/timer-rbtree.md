@@ -1,9 +1,9 @@
 ---
 title: "タイマは赤黒木の最小値だけを見て、イベント待ちのタイムアウト引数に畳む"
 description: "数万接続ぶんのタイムアウトを、専用スレッドもタイマ fd も使わずに管理する。赤黒木に全部入れて最小値を取り、それを epoll_wait のタイムアウトにする。ノードはイベント構造体に埋め込んであるので確保が要らず、キーの比較は差の符号で行うので 49 日ごとのオーバーフローを跨げる。300ms 未満のタイマ更新は無視して木を触らない、という割り切りも入っている。"
-group: "プロセスとイベント"
+group: "設計の掘り下げ"
 sidebar:
-  order: 5
+  order: 37
 ---
 
 ## 何を学んだか
@@ -14,7 +14,7 @@ HTTP サーバはあらゆるところにタイムアウトを持つ。ヘッダ
 
 接続が 5 万本あれば、タイマも同じオーダーになる。しかも **タイマの張り直しがとにかく頻繁に起きる**。データが 1 バイト届くたびに「あと 60 秒」と延長するからだ。
 
-そして [ステートマシンのページ](../state-machine/) のとおり、ワーカーは 1 スレッドで、`epoll_wait` で寝ている。タイマ用のスレッドを立てるわけにはいかない。`timerfd` を接続ごとに作れば fd が倍要る。
+そして [ワーカーの 1 周のページ](../state-machine/) のとおり、ワーカーは 1 スレッドで、`epoll_wait` で寝ている。タイマ用のスレッドを立てるわけにはいかない。`timerfd` を接続ごとに作れば fd が倍要る。
 
 ### Nginx の答え
 
@@ -149,7 +149,7 @@ ngx_rbtree_min(ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel)
 
 ### ノードは構造体に埋め込む
 
-[ステートマシンのページ](../state-machine/) で見たとおり、`ngx_event_t` の中に `ngx_rbtree_node_t timer` がそのまま入っている。木に入れるのは、そのメンバのアドレスだ。
+[ワーカーの 1 周のページ](../state-machine/) で見たとおり、`ngx_event_t` の中に `ngx_rbtree_node_t timer` がそのまま入っている。木に入れるのは、そのメンバのアドレスだ。
 
 逆方向は `ngx_rbtree_data` で計算する ([`src/core/ngx_rbtree.h#L50-L51`](https://github.com/nginx/nginx/blob/release-1.31.4/src/core/ngx_rbtree.h#L50-L51))。
 
@@ -280,7 +280,7 @@ ngx_event_add_timer(ngx_event_t *ev, ngx_msec_t timer)
     return NGX_OK;
 ```
 
-これだけが木を全走査する。呼ばれるのは graceful shutdown のときだけで、[master/worker のページ](../master-worker/) で見たワーカーのループが「もう終わっていいか」を問い合わせる場所だ。
+これだけが木を全走査する。呼ばれるのは graceful shutdown のときだけで、[ワーカーの 1 周のページ](../state-machine/) で見たワーカーのループが「もう終わっていいか」を問い合わせる場所だ。
 
 `cancelable` が立っているのは、**サービスの継続とは関係ない周期タイマ**。ログのバッファを定期的にフラッシュするタイマ ([`ngx_http_log_module.c#L1636`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_log_module.c#L1636))、DNS の再解決タイマ ([`ngx_resolver.c#L193`](https://github.com/nginx/nginx/blob/release-1.31.4/src/core/ngx_resolver.c#L193))、upstream ゾーンの再解決 ([`ngx_http_upstream_zone_module.c#L703`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_upstream_zone_module.c#L703))、shutdown 自体のタイマ ([`ngx_cycle.c#L1447`](https://github.com/nginx/nginx/blob/release-1.31.4/src/core/ngx_cycle.c#L1447)) など。
 
@@ -445,7 +445,7 @@ graceful shutdown の判定は、素朴には「処理中のリクエストが 0
 
 `ngx_current_msec` が 1 周に 1 回しか更新されないので、**1 周の中で長い処理をすると、その間の経過時間がタイマから見えない**。gzip で大きなレスポンスを圧縮している最中に 500ms 経っても、`ngx_current_msec` は動かない。
 
-これはバグではなく設計で、そもそも 1 周を長くしてはいけないという制約が先にある。[ステートマシンのページ](../state-machine/) の「ブロックしない」が守られていれば、1 周は短い。**時刻キャッシュの正確さが、イベントループの規律を守っているかどうかの指標になっている**とも言える。
+これはバグではなく設計で、そもそも 1 周を長くしてはいけないという制約が先にある。[ワーカーの 1 周のページ](../state-machine/) の「ブロックしない」が守られていれば、1 周は短い。**時刻キャッシュの正確さが、イベントループの規律を守っているかどうかの指標になっている**とも言える。
 
 アクセスログの `$msec` も同じキャッシュから来るので、ログのタイムスタンプもループ 1 周ぶんの粒度になる。Nginx のログで同じミリ秒のエントリが並ぶことがあるのは、これが理由だ。
 

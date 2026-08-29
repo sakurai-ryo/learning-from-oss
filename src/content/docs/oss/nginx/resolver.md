@@ -1,9 +1,9 @@
 ---
 title: "getaddrinfo が使えないので、DNS クライアントを 4700 行かけて自分で書く"
 description: "名前解決はイベントループを止める代表格。Nginx は設定を読む間だけ getaddrinfo を使い、実行時は自前の DNS クライアントに切り替える。同じ名前を待つ複数のリクエストは 1 本のクエリに合流し、再送は期限順のキューを 1 本のタイマで回す。応答が切り詰められたら TCP で問い合わせ直す。/etc/resolv.conf は読まない。"
-group: "プロセスとイベント"
+group: "設計の掘り下げ"
 sidebar:
-  order: 7
+  order: 40
 ---
 
 ## 何を学んだか
@@ -65,7 +65,7 @@ ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
 
 **「起動時はブロックしてよい、実行時はダメ」という線を、引数の型 (`ngx_pool_t *pool` に何を渡すか) が暗黙に示している**形になっている。
 
-実行時に名前を引くコードは、全部 `ngx_resolve_name()` を通る。`ngx_http_upstream` が `proxy_pass` の変数を解決するとき ([upstream のページ](../upstream-event-pipe/) の `u->resolved`)、`ngx_http_referer_module` や `ngx_stream_proxy_module` も同じ。
+実行時に名前を引くコードは、全部 `ngx_resolve_name()` を通る。`ngx_http_upstream` が `proxy_pass` の変数を解決するとき ([upstream のページ](../upstream/) の `u->resolved`)、`ngx_http_referer_module` や `ngx_stream_proxy_module` も同じ。
 
 ### キャッシュのノード
 
@@ -391,7 +391,7 @@ UDP は接続してから送る ([`#L1320-L1355`](https://github.com/nginx/nginx
 
 **UDP ソケットを `connect()` してから使う。** これで送信先が固定され、`recv()` が他のホストからのパケットを受け取らなくなる。DNS のスプーフィング対策としての基本になっている。
 
-`rec->udp->read->resolver = 1` は、[master/worker のページ](../master-worker/) で見た `ngx_worker_process_exit()` の判定で使われる。
+`rec->udp->read->resolver = 1` は、[ワーカーの 1 周のページ](../state-machine/) で見た `ngx_worker_process_exit()` の判定で使われる。
 
 ```c title="src/os/unix/ngx_process_cycle.c"
             if (c[i].fd != -1
@@ -614,4 +614,4 @@ Node.js の `process.nextTick` や、Rust の `Poll::Ready` のように、**「
 - ディスク I/O を外に出す話は [ブロックする I/O のページ](../blocking-io/)。同じ「ループを止めない」という動機で、まったく違う解き方になっている。
 - `cancelable` タイマと「最小値でタイマを張る」構造は [タイマのページ](../timer-rbtree/)。
 - 侵入型の赤黒木 + LRU キューという組み合わせは [スラブアロケータのページ](../slab-shared-memory/) の `limit_req` にも出てくる。
-- 解決結果を使う側は [upstream と event_pipe のページ](../upstream-event-pipe/)。
+- 解決結果を使う側は [upstream のページ](../upstream/) の `u->resolved` の経路。

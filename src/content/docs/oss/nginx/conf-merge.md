@@ -1,9 +1,9 @@
 ---
 title: "設定の継承を「未設定」という第 3 の状態で表し、マージを機械的にする"
 description: "http / server / location の 3 階層で、書かれた設定だけが子に降りてくる。Nginx は全フィールドを NGX_CONF_UNSET で初期化し、パース後に親子を突き合わせる。「未設定」を型の中の 1 つの値として持つので、マージは 1 フィールド 1 行のマクロで書け、同じ値が「同じディレクティブが 2 回書かれた」の検出にも使い回される。"
-group: "拡張の仕組み"
+group: "設計の掘り下げ"
 sidebar:
-  order: 13
+  order: 42
 ---
 
 ## 何を学んだか
@@ -592,6 +592,7 @@ Nginx がこれで大きく困っていないのは、設定値のほとんど�
 
 ## 関連
 
-- モジュールの残り 2 つのフック (`preconfiguration` / `postconfiguration`) は [フェーズエンジンのページ](../phase-engine/)。
+- モジュールの残り 2 つのフック (`preconfiguration` / `postconfiguration`) を含めた 8 本の並びは [モジュールシステムのページ](../module-system/)。`postconfiguration` で handler を登録する側は [フェーズエンジンのページ](../phase-engine/)。
+- `ngx_command_t` を名前で引いて `create_*_conf` の結果に値を書き込む側は [設定パースのページ](../conf-parse/)。
 - `ngx_conf_merge_bufs_value` が扱う `ngx_bufs_t` は [buf と chain のページ](../buf-chain/)。
 - ここで作られた `loc_conf` を実行時に引くのが `ngx_http_get_module_loc_conf()` で、[変数のページ](../variables/) でも頻繁に出てくる。

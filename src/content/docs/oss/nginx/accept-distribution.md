@@ -1,9 +1,9 @@
 ---
 title: "「起こしたワーカー全員が空振りする」問題を、ロックからカーネルの分配に移していった経緯"
 description: "全ワーカーが同じ listen ソケットを持つと、1 本の接続で全員が起きて 1 人しか成功しない。Nginx はこれを共有メモリのミューテックスで解き、次に EPOLLEXCLUSIVE に移し、最終的に SO_REUSEPORT でソケットごと分けた。3 つの解法がコードに同居していて、優先順位が if の並びとして読める。ワーカーが自分の混み具合を見て accept を控える ngx_accept_disabled も入っている。"
-group: "プロセスとイベント"
+group: "設計の掘り下げ"
 sidebar:
-  order: 4
+  order: 38
 ---
 
 ## 何を学んだか
@@ -131,7 +131,7 @@ sidebar:
 
 3 つのことが起きている。
 
-- **ロックを取れたら `NGX_POST_EVENTS` を立てる。** これは「イベントを即座に処理せず、ポストキューに積め」というフラグ。accept を全部キューに積んで、ロックを離してから処理する。ロックの保持時間を短くするためで、[ステートマシンのページ](../state-machine/) で見た `ngx_posted_accept_events` がこれに使われる。
+- **ロックを取れたら `NGX_POST_EVENTS` を立てる。** これは「イベントを即座に処理せず、ポストキューに積め」というフラグ。accept を全部キューに積んで、ロックを離してから処理する。ロックの保持時間を短くするためで、[ワーカーの 1 周のページ](../state-machine/) で見た `ngx_posted_accept_events` がこれに使われる。
 - **取れなかったら、`epoll_wait` のタイムアウトを `accept_mutex_delay` (既定 500ms) で頭打ちにする。** ロックを持っている側が寝込んでいる場合に、いつまでも待たないため。
 - **`ngx_accept_disabled` が正なら、そもそも取りに行かない。**
 
@@ -451,7 +451,8 @@ accept ロックを持っている間に、accept したコネクションのリ
 ## 関連
 
 - リスニングソケットが fork より前に開かれる経緯は [master/worker のページ](../master-worker/)。
-- `NGX_POST_EVENTS` とポストキューの仕組みは [ステートマシンのページ](../state-machine/)。
+- 分配のあとで `ngx_event_accept()` が fd を `ngx_connection_t` に組み立てるところは [accept から接続までのページ](../accept-to-connection/)。
+- `NGX_POST_EVENTS` とポストキューの仕組みは [ワーカーの 1 周のページ](../state-machine/)。
 - `accept_mutex` が使う共有メモリ上のミューテックスは [スラブアロケータのページ](../slab-shared-memory/) と同じ共有メモリの上に載っている。
 - `EPOLLEXCLUSIVE` を渡す `ngx_add_event` の抽象そのものは [イベントメソッドのページ](../event-methods/)。
 - `multi_accept off` が既定である理由のもう半分は [1 周の長さのページ](../loop-latency/)。

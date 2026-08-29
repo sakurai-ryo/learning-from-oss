@@ -1,9 +1,9 @@
 ---
-title: "epoll と kqueue の差を、関数ポインタ 8 本と「能力のフラグ」で吸収する"
-description: "イベント待ちの API は OS ごとに違う。Nginx は add/del/process_events など 8 本の関数ポインタで実装を差し替え、実装ごとの性質の違いは NGX_USE_* のフラグで表す。定数はそれぞれの OS のネイティブな値に define されるので変換が要らず、上位のコードは ngx_handle_read_event() を呼ぶだけで、level と edge の違いを知らずに済む。"
-group: "プロセスとイベント"
+title: "epoll と kqueue の差を、関数ポインタ 10 本と「能力のフラグ」で吸収する"
+description: "イベント待ちの API は OS ごとに違う。Nginx は add/del/process_events など 10 本の関数ポインタで実装を差し替え、実装ごとの性質の違いは NGX_USE_* のフラグで表す。定数はそれぞれの OS のネイティブな値に define されるので変換が要らず、上位のコードは ngx_handle_read_event() を呼ぶだけで、level と edge の違いを知らずに済む。"
+group: "設計の掘り下げ"
 sidebar:
-  order: 3
+  order: 36
 ---
 
 ## 何を学んだか
@@ -20,11 +20,11 @@ sidebar:
 - event ports は通知するたびに登録が消える。
 - `poll` と `/dev/poll` は「イベントに任意のポインタを紐づける」ができないので、fd から構造体を引く表が要る。
 
-[ステートマシンのページ](../state-machine/) で見たとおり、Nginx のコードは至るところで「読めなかったのでイベントを再登録して帰る」を書く。その 1 行が、7 種類の API それぞれで正しく動かなければならない。
+[ワーカーの 1 周のページ](../state-machine/) で見たとおり、Nginx のコードは至るところで「読めなかったのでイベントを再登録して帰る」を書く。その 1 行が、7 種類の API それぞれで正しく動かなければならない。
 
 ### Nginx の答え
 
-1. **イベントメソッドを、関数ポインタ 8 本の表にする。** `add` / `del` / `enable` / `disable` / `add_conn` / `del_conn` / `notify` / `process_events` と、`init` / `done`。
+1. **イベントメソッドを、関数ポインタ 10 本の表にする。** `add` / `del` / `enable` / `disable` / `add_conn` / `del_conn` / `notify` / `process_events` と、`init` / `done`。
 2. **イベントメソッドも普通のモジュールにする。** `ngx_event_module_t` は自分の設定を持てる。`epoll_events` のようなディレクティブがそこから生える。
 3. **性質の違いを `NGX_USE_*` のフラグで表す。** 「level か」「edge か」「EAGAIN まで読む必要があるか」「fd の表が要るか」を、実装が `ngx_event_flags` に立てる。
 4. **`NGX_READ_EVENT` などの定数を、その OS のネイティブな値に `#define` する。** `kqueue` では `EVFILT_READ`、`epoll` では `EPOLLIN|EPOLLRDHUP`、`select` では 0。変換のコードが要らない。
@@ -35,7 +35,7 @@ sidebar:
 
 ## ソースコードのどこか
 
-### 8 本の関数ポインタ
+### 10 本の関数ポインタ
 
 [`src/event/ngx_event.h#L166-L183`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event.h#L166-L183)。
 
@@ -89,7 +89,7 @@ static ngx_event_module_t  ngx_epoll_module_ctx = {
 };
 ```
 
-**「この実装には無い機能」は `NULL` で表す。** `eventfd` が無い環境では `notify` が `NULL` になり、[ステートマシンのページ](../state-machine/) で見たスレッドプールは `ngx_notify == NULL` を見て自分を無効化する。
+**「この実装には無い機能」は `NULL` で表す。** `eventfd` が無い環境では `notify` が `NULL` になり、[ブロックする I/O のページ](../blocking-io/) のスレッドプールは `ngx_notify == NULL` を見て自分を無効化する。
 
 `add_conn` / `del_conn` は「読みと書きを一度に登録する」ためのもので、これも実装によっては無い。`ngx_add_conn` が `NULL` かどうかで呼び分けるコードが各所にある。
 
@@ -108,7 +108,7 @@ typedef struct {
 } ngx_event_module_t;
 ```
 
-[フェーズエンジンのページ](../phase-engine/) の `ngx_http_module_t` と同じ形で、**イベントメソッドが自分の設定を持てる**。`epoll` なら `epoll_events` と `worker_aio_requests`、`kqueue` なら `kqueue_changes` と `kqueue_events`。
+[モジュールシステムのページ](../module-system/) の `ngx_http_module_t` と同じ形で、**イベントメソッドが自分の設定を持てる**。`epoll` なら `epoll_events` と `worker_aio_requests`、`kqueue` なら `kqueue_changes` と `kqueue_events`。
 
 ```c title="src/event/modules/ngx_epoll_module.c"
 static ngx_command_t  ngx_epoll_commands[] = {
@@ -122,7 +122,7 @@ static ngx_command_t  ngx_epoll_commands[] = {
     /* ... */
 ```
 
-**実装ごとのチューニングパラメータが、その実装のファイルに閉じている。** `ngx_event.c` に「epoll のときはこの設定を読む」という分岐が要らない。[設定マージのページ](../conf-merge/) の `ngx_command_t` の仕組みがそのまま使われている。
+**実装ごとのチューニングパラメータが、その実装のファイルに閉じている。** `ngx_event.c` に「epoll のときはこの設定を読む」という分岐が要らない。[設定パースのページ](../conf-parse/) の `ngx_command_t` の仕組みがそのまま使われている。
 
 ### 能力をフラグで宣言する
 
@@ -334,7 +334,7 @@ ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
 
 **`if` が 3 つ並んでいるだけで、深い抽象化はしていない。** それでも、この 80 行のおかげで、呼び出す側の 100 箇所以上が 1 行で済んでいる。
 
-`rev->active` (カーネルに登録済み) と `rev->ready` (読める状態) の 2 ビットで、必要な判断が全部できているのが効いている。[ステートマシンのページ](../state-machine/) で見た `ngx_event_t` のフラグ設計が、ここで回収されている。
+`rev->active` (カーネルに登録済み) と `rev->ready` (読める状態) の 2 ビットで、必要な判断が全部できているのが効いている。[ワーカーの 1 周のページ](../state-machine/) で見た `ngx_event_t` のフラグ設計が、ここで回収されている。
 
 ### `ready` を自分で維持する
 
@@ -685,7 +685,7 @@ edge-triggered では、`EAGAIN` が返るまで読まないと通知を取り�
 
 `rev->available` を追跡すると、この 1 回を省ける。kqueue は最初から教えてくれるので簡単で、epoll では `FIONREAD` を使う。ただし **カーネルの状態をユーザー空間でミラーする**ことになるので、ずれるとハングする。だから `available < 0` になったら安全側に倒す、というコメント付きの防御が入っている。
 
-[ステートマシンのページ](../state-machine/) の「取り込むべきでない条件」に書いたとおり、これは 20 年かけて詰めてきたから成立している最適化で、新しく書くコードで最初からやるものではない。
+後の「取り込むべきでない条件」に書くとおり、これは 20 年かけて詰めてきたから成立している最適化で、新しく書くコードで最初からやるものではない。
 
 ### `#ifdef` と実行時テストの使い分け
 
@@ -735,7 +735,7 @@ epoll と kqueue が、まったく同じ手法で stale event を弾いてい�
 
 ## 関連
 
-- `ngx_event_t` のフラグと handler の設計は [ステートマシンのページ](../state-machine/)。
+- `ngx_event_t` のフラグと handler の設計は [ワーカーの 1 周のページ](../state-machine/)。
 - `instance` ビットが必要になる理由 (接続の使い回し) は [接続の再利用のページ](../connection-reuse/)。
 - `NGX_POST_EVENTS` を立てる側の事情は [accept の分配のページ](../accept-distribution/)。
 - `ngx_notify()` を使う側は [ブロックする I/O のページ](../blocking-io/)。

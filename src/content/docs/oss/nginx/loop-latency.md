@@ -1,16 +1,16 @@
 ---
 title: "1 周が長くなる操作を全部見つけて、それぞれに上限を置く"
 description: "1 スレッドのイベントループでは、1 周の長さが全接続のレイテンシの下限になる。Nginx は「1 回にどれだけやるか」を至るところで区切っている。sendfile は 2MB ごと、accept は 1 回に 1 本、キャッシュの掃除は 2〜3 個、iovec は IOV_MAX。区切ったあとの残りは次の周に譲り、待たせたい相手にはタイマを張る。"
-group: "プロセスとイベント"
+group: "設計の掘り下げ"
 sidebar:
-  order: 8
+  order: 41
 ---
 
 ## 何を学んだか
 
 ### どんな状況の話か
 
-[ステートマシンのページ](../state-machine/) のとおり、ワーカーは 1 スレッドで数万接続を回す。ループ 1 周は「`epoll_wait` で起きて、返ってきたイベントの handler を順に呼んで、タイマを処理して、また寝る」。
+[ワーカーの 1 周のページ](../state-machine/) のとおり、ワーカーは 1 スレッドで数万接続を回す。ループ 1 周は「`epoll_wait` で起きて、返ってきたイベントの handler を順に呼んで、タイマを処理して、また寝る」。
 
 このとき、**1 周にかかる時間が、全接続の応答レイテンシの下限になる**。1 周が 50ms かかるなら、その 50ms の間に届いたデータは最大 50ms 待たされる。1 接続の処理を速くすることより、**「1 周を短く保つ」ことのほうが全体の品質を決める**。
 
@@ -87,7 +87,7 @@ sidebar:
 
 `epoll` は「書ける」と言い続けているわけではない ([イベントメソッドのページ](../event-methods/) の edge-triggered)。書き切っていないのに通知を待つと、二度と起きない。かといってその場でループするとまた 1 周が伸びる。**`ngx_posted_next_events` が、この 2 つの間の第 3 の選択肢になっている。**
 
-キューの実体は [ステートマシンのページ](../state-machine/) で見た 60 行だ ([`src/event/ngx_event_posted.c#L39-L60`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_posted.c#L39-L60))。
+キューの実体は [ワーカーの 1 周のページ](../state-machine/) で見た 60 行だ ([`src/event/ngx_event_posted.c#L39-L60`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_posted.c#L39-L60))。
 
 ```c title="src/event/ngx_event_posted.c"
 void
@@ -209,7 +209,7 @@ gzip も同じ形を持っている ([`src/http/modules/ngx_http_gzip_filter_mod
 
 `postpone_gzipping` が 0 でなければ、その量が溜まるまで `deflate()` を呼ばない。**zlib の呼び出しあたりのオーバーヘッドを、まとめることで償却する。**
 
-[upstream のページ](../upstream-event-pipe/) の `busy_size` も、向きは違うが同じ族になる。**「下流に渡したまま返ってこない量」に上限を置く**ことで、1 周で扱うバッファの数が発散しないようにしている。
+[upstream と event_pipe のページ](../upstream-event-pipe/) の `busy_size` も、向きは違うが同じ族になる。**「下流に渡したまま返ってこない量」に上限を置く**ことで、1 周で扱うバッファの数が発散しないようにしている。
 
 ### `iovec` の数に上限がある
 
@@ -254,7 +254,7 @@ gzip も同じ形を持っている ([`src/http/modules/ngx_http_gzip_filter_mod
 
 **`delayed = 1` を立てて、タイマを張って帰る。** CPU を 1 サイクルも使わずに待つ。
 
-`delayed` フラグは [ステートマシンのページ](../state-machine/) の `ngx_http_request_handler` で解除される。
+`delayed` フラグは [ワーカーの 1 周のページ](../state-machine/) の `ngx_http_request_handler` で解除される。
 
 ```c title="src/http/ngx_http_request.c"
     if (ev->delayed && ev->timedout) {
@@ -265,7 +265,7 @@ gzip も同じ形を持っている ([`src/http/modules/ngx_http_gzip_filter_mod
 
 **「タイマで起こされた」と「本当にタイムアウトした」を、`delayed` の有無で区別する。** [タイマのページ](../timer-rbtree/) のタイマは 1 種類しかないので、意味は使う側が付ける。
 
-同じ形が `limit_req` の `delay` にも、[イベントメソッドのページ](../event-methods/) の `ngx_event_accept` の `EMFILE` バックオフにもある。**「今はできない」を、ビジーループではなく時間で表現する**という共通の形になっている。
+同じ形が `limit_req` の `delay` にも、[accept の分配のページ](../accept-distribution/) の `ngx_event_accept` の `EMFILE` バックオフにもある。**「今はできない」を、ビジーループではなく時間で表現する**という共通の形になっている。
 
 ### 1 周が伸びたことを検出する
 
@@ -288,7 +288,7 @@ gzip も同じ形を持っている ([`src/http/modules/ngx_http_gzip_filter_mod
                    "timer delta: %M", delta);
 ```
 
-もう 1 つが `log->action` で、[upstream のページ](../upstream-event-pipe/) で見たとおり `ngx_event_pipe` は "sending to client" と "reading upstream" を切り替えている。
+もう 1 つが `log->action` で、[upstream と event_pipe のページ](../upstream-event-pipe/) で見たとおり `ngx_event_pipe` は "sending to client" と "reading upstream" を切り替えている。
 
 ```c title="src/event/ngx_event_pipe.c"
         if (do_write) {
@@ -324,7 +324,7 @@ ngx_set_shutdown_timer(ngx_cycle_t *cycle)
 }
 ```
 
-[master/worker のページ](../master-worker/) の graceful shutdown は、全接続が終わるまで待つ。WebSocket や長いダウンロードが 1 本残っていれば、ワーカーは終わらない。
+[ワーカーの 1 周のページ](../state-machine/) の graceful shutdown は、全接続が終わるまで待つ。WebSocket や長いダウンロードが 1 本残っていれば、ワーカーは終わらない。
 
 `worker_shutdown_timeout` を設定すると、その時刻で **残っている接続を全部切る**。`cancelable = 1` なので、[タイマのページ](../timer-rbtree/) の「このタイマだけなら終わってよい」判定を妨げない。
 
@@ -336,9 +336,9 @@ ngx_set_shutdown_timer(ngx_cycle_t *cycle)
 
 Nginx のコードを横断して見ると、**「ループを回す」書き方がほとんど無い**ことに気づく。あるのは「上限まで回して、残りを返す」か「上限まで回して、次の周に譲る」のどちらかだ。
 
-`ngx_event_pipe` の 4 段の逃げ道 ([upstream のページ](../upstream-event-pipe/))、`ngx_http_write_filter` の `limit`、`ngx_drain_connections` の 32、`ngx_resolver_expire` の 2。**全部が「途中でやめて、後で続きをやる」形になっている。**
+`ngx_event_pipe` の 4 段の逃げ道 ([upstream と event_pipe のページ](../upstream-event-pipe/))、`ngx_http_write_filter` の `limit`、`ngx_drain_connections` の 32、`ngx_resolver_expire` の 2。**全部が「途中でやめて、後で続きをやる」形になっている。**
 
-これは [ステートマシンのページ](../state-machine/) の中断・再開の仕組みがあるから書ける。`NGX_AGAIN` を返して状態を構造体に残せるので、**どこで区切っても再開できる**。逆に言えば、ステートマシン化の投資が、レイテンシ制御の自由度として回収されている。
+これは [ワーカーの 1 周のページ](../state-machine/) の中断・再開の仕組みがあるから書ける。`NGX_AGAIN` を返して状態を構造体に残せるので、**どこで区切っても再開できる**。逆に言えば、ステートマシン化の投資が、レイテンシ制御の自由度として回収されている。
 
 ### 定数の根拠が測定にしかない
 
@@ -407,7 +407,7 @@ Nginx のコードを横断して見ると、**「ループを回す」書き方
 
 ## 関連
 
-- 中断・再開の基本形と `ngx_posted_next_events` は [ステートマシンのページ](../state-machine/)。
+- 中断・再開の基本形と `ngx_posted_next_events` は [ワーカーの 1 周のページ](../state-machine/)。
 - `sendfile_max_chunk` と `postpone_output` を使う側は [出力フィルタチェーンのページ](../output-filter-chain/)。
 - 掃除の分割は [スラブアロケータ](../slab-shared-memory/) / [接続の再利用](../connection-reuse/) / [DNS リゾルバ](../resolver/) の 3 ページに出てくる。
 - 時刻キャッシュの粒度が指標になる話は [タイマのページ](../timer-rbtree/)。

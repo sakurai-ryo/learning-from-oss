@@ -1,9 +1,9 @@
 ---
 title: "解放を個別に書かず、寿命が同じものをまとめて捨てるアリーナにする"
 description: "確保はポインタを進めるだけ、解放はリクエストが終わるときに丸ごと 1 回。ソース全体で確保が 979 箇所あるのに個別解放は 22 箇所しかない。プールは設定・接続・リクエストの 3 段に入れ子になっていて、リクエスト構造体自身も自分のプールから取られている。メモリ以外の資源は cleanup チェーンでプールの寿命に相乗りさせる。"
-group: "メモリとバッファ"
+group: "設計の掘り下げ"
 sidebar:
-  order: 9
+  order: 33
 ---
 
 ## 何を学んだか
@@ -286,7 +286,7 @@ ngx_pfree(ngx_pool_t *pool, void *p)
 }
 ```
 
-**プール本体から取ったメモリは解放できない**。`ngx_pfree` に渡しても `NGX_DECLINED` が返るだけで、何も起きない。呼び出し側はそれを知った上で使う。[ステートマシンのページ](../state-machine/) で見た `ngx_http_wait_request_handler` がこう書いていたのがそれだ。
+**プール本体から取ったメモリは解放できない**。`ngx_pfree` に渡しても `NGX_DECLINED` が返るだけで、何も起きない。呼び出し側はそれを知った上で使う。[ワーカーの 1 周のページ](../state-machine/) で見た `ngx_http_wait_request_handler` がこう書いていたのがそれだ。
 
 ```c title="src/http/ngx_http_request.c"
         if (b->pos == b->last) {

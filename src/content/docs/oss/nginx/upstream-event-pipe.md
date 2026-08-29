@@ -1,251 +1,189 @@
 ---
 title: "上流からの応答を全部受け取ってから返すのをやめ、埋まった端から下流へ流す"
-description: "リバースプロキシは 2 本のソケットを同時に扱う。上流が速くて下流が遅ければ、どこかに溜める必要がある。Nginx は上流への通信を「意図を組み立てる関数ポインタ 6 本」に抽象化し、応答の中継を event_pipe という双方向のループに任せる。バッファが尽きたときの逃げ道が 4 通り用意されていて、最後は一時ファイルに落ちる。"
-group: "上流とデータの流れ"
+description: "`ngx_event_pipe_t` は 2 本のソケットの間に立ち、`read_upstream` と `write_to_downstream` を交互に回す。バッファが尽きたときの逃げ道が 4 段あり、最後は一時ファイルに落ちる。1 枚の生バッファを複数の出力 buf が参照するので、解放は `shadow` のリンクをたどって行われる。`in` / `out` / `busy` / `free` / `free_raw_bufs` の 5 本のチェーンと 12 個のフラグが、この 1146 行を動かしている。"
+group: "骨格: プロキシとして"
 sidebar:
-  order: 16
+  order: 25
 ---
 
-## 何を学んだか
+## この層の責務
 
-### どんな状況の話か
+リバースプロキシは 2 本のソケットを同時に扱う。上流は同じデータセンターにいて 10Gbps、クライアントはモバイル回線で 1Mbps、ということが普通にある。速度差をどこかで吸収しなければならない。
 
-リバースプロキシは、クライアントと上流サーバの間に立つ。ソケットが 2 本あり、**両方が独立に読めたり書けたりする**。しかも速度が違う。上流は同じデータセンターにいて 10Gbps、クライアントはモバイル回線で 1Mbps、ということが普通にある。
+素朴に「上流から全部読んでからクライアントに書く」と、100MB の応答で 100MB のメモリを使う。逆に「1 バイト読んだら 1 バイト書く」にすると、上流の接続を遅いクライアントに合わせて長時間占有する。上流が PHP-FPM のようなプロセスプールなら、それは致命的だ。
 
-素朴に書くと「上流から全部読んで、それからクライアントに書く」になる。これだと 100MB の応答で 100MB のメモリを使う。逆に「1 バイト読んだら 1 バイト書く」にすると、上流のコネクションを遅いクライアントに合わせて長時間占有することになる。上流が PHP-FPM のようなプロセスプールなら、それは致命的だ。
+`src/event/ngx_event_pipe.c` の 1146 行が、この 2 つの間を埋める。責務は 3 つに絞られている。
 
-そして [ステートマシン](../state-machine/) なので、どちらのソケットも `NGX_AGAIN` を返しうる。「上流から読んでいる途中で、下流が書けるようになった」という状態を扱えなければならない。
+- **上流から読めるだけ読み、下流へ書けるだけ書く。** どちらも `NGX_AGAIN` を返しうるので、進まなくなるまで交互に回す。
+- **溜める場所を段階的に用意する。** 空きバッファ、新規確保、一時ファイル。どれも尽きたら読むのをやめる。
+- **バッファの寿命を管理する。** 下流に渡したバッファはすぐには再利用できない。
 
-さらに Nginx は、proxy / FastCGI / uwsgi / SCGI / gRPC / memcached を同じ枠組みで扱う。プロトコルが全部違う。
+やらないことも明確で、**プロトコルを知らない**。HTTP のチャンクを剥がすのも FastCGI のレコードを剥がすのも `p->input_filter` の仕事で、pipe 自身は「埋まった生バッファ」を渡すだけになっている。下流への書き出しも `p->output_filter` に委ねられていて、それが [出力フィルタチェーン](../output-filter-chain/) の入口を叩く。
 
-### Nginx の答え
+`ngx_http_upstream_t` からどう呼ばれるかは [upstream](../upstream/) を参照。ここでは pipe の内側だけを見る。
 
-1. **プロトコル依存の部分を、関数ポインタ 6 本に切り出す。** `create_request` / `reinit_request` / `process_header` / `input_filter` / `abort_request` / `finalize_request`。`ngx_http_upstream_t` の残りは全プロトコル共通。
-2. **上流との通信も、リクエストと同じ二段のハンドラで表す。** `c->read->handler` は `ngx_http_upstream_handler` 固定、`u->read_event_handler` が状態に応じて差し替わる。
-3. **応答の中継に 2 つのモードを持つ。** バッファリングあり (`ngx_event_pipe`) と、なし (`ngx_http_upstream_process_non_buffered_request`)。
-4. **`ngx_event_pipe` は「書く → 読む」を交互に回すループ。** どちらかが進まなくなるまで回して、進まなくなったらイベントを再登録して帰る。
-5. **バッファが尽きたときの逃げ道が 4 段。** 空きバッファを使う → 新しく確保する → 下流が書けるならそちらに流す → 一時ファイルに落とす。それも無理なら読むのをやめる。
-6. **`busy_size` で「下流に渡したまま返ってこないバッファ」の量を制限する。** これを超えたら、上流から読まずに下流への書き出しを優先する。
-7. **バッファリングなしのモードは、1 枚のバッファを read と write で共有する。** 溜めないのでメモリは固定。
+## 主要な型とその関係
 
-## ソースコードのどこか
+### `ngx_event_pipe_t`
 
-### プロトコル依存部分の切り出し
+[`src/event/ngx_event_pipe.h#L25-L99`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.h#L25-L99)。74 行、フィールドは 40 個ある。役割ごとに全部並べるとこうなる。
 
-[`src/http/ngx_http_upstream.h#L342-L400`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.h#L342-L400)。
+| 分類         | フィールド                                                  | 意味                                                                    |
+| ------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| ソケット     | `upstream` / `downstream`                                   | 2 本の `ngx_connection_t`                                               |
+| チェーン     | `free_raw_bufs`                                             | 受信に使える生バッファ                                                  |
+|              | `in` / `last_in`                                            | `input_filter` が積んだ、下流へ出すべき buf                             |
+|              | `out`                                                       | 一時ファイルに書き出した領域を指す buf                                  |
+|              | `busy`                                                      | 下流に渡したが送り終わっていない buf                                    |
+|              | `free`                                                      | 再利用できる chain link と buf の殻                                     |
+|              | `writing`                                                   | スレッドで一時ファイルに書き込み中の buf                                |
+| フィルタ     | `input_filter` / `input_ctx`                                | 生バッファ 1 枚を `in` に変換する                                       |
+|              | `output_filter` / `output_ctx`                              | `in` や `out` を下流へ渡す                                              |
+|              | `thread_handler` / `thread_ctx` / `thread_task`             | 一時ファイル書き込みをスレッドに逃がす                                  |
+| フラグ       | `read`                                                      | この周回で 1 バイトでも読めたか                                         |
+|              | `cacheable`                                                 | 応答をキャッシュまたは保存するか                                        |
+|              | `single_buf` / `free_bufs`                                  | 1 回の `recv_chain` で 1 枚だけ使う / 生バッファを `ngx_pfree` してよい |
+|              | `upstream_done` / `upstream_error` / `upstream_eof`         | 上流側の終了理由 3 種                                                   |
+|              | `upstream_blocked`                                          | バッファが尽きたので下流に流す必要がある                                |
+|              | `downstream_done` / `downstream_error`                      | 下流側の終了                                                            |
+|              | `cyclic_temp_file` / `aio`                                  | 一時ファイルを巻き戻して使い回す / 非同期 I/O が飛んでいる最中          |
+| バッファ量   | `allocated` / `bufs` / `tag`                                | 確保済み枚数、`proxy_buffers` の値、どのモジュールの buf か             |
+|              | `busy_size`                                                 | `busy` にあってよい総バイト数の上限                                     |
+| 進捗         | `read_length` / `length`                                    | 読んだ総バイト数と、あと何バイト要るか                                  |
+| 一時ファイル | `max_temp_file_size` / `temp_file_write_size` / `temp_file` | 上限、1 回の書き込み量、実体                                            |
+| タイムアウト | `read_timeout` / `send_timeout` / `send_lowat`              | 上流の読み、下流の書き                                                  |
+| 先読み       | `preread_bufs` / `preread_size`                             | ヘッダと一緒に読んでしまったボディ                                      |
+| キャッシュ   | `buf_to_file`                                               | キャッシュファイルの先頭に書くヘッダ部分                                |
+| レート制限   | `limit_rate` / `start_sec`                                  | `proxy_limit_rate`                                                      |
+| その他       | `pool` / `log` / `num`                                      |                                                                         |
 
-```c title="src/http/ngx_http_upstream.h"
-struct ngx_http_upstream_s {
-    ngx_http_upstream_handler_pt     read_event_handler;
-    ngx_http_upstream_handler_pt     write_event_handler;
+### 5 本のチェーンを行き来する
 
-    ngx_peer_connection_t            peer;
+チェーンが 5 本あるのは、**1 枚の生バッファが 3 つの状態を同時に持ちうる**からだ。「受信に使える」「下流に出したい中身が入っている」「下流に渡して返事待ち」は、同じメモリ領域に対する別の見方になる。
 
-    ngx_event_pipe_t                *pipe;
-
-    ngx_chain_t                     *request_bufs;
-
-    ngx_output_chain_ctx_t           output;
-    ngx_chain_writer_ctx_t           writer;
-    /* ... */
-    ngx_buf_t                        buffer;
-    off_t                            length;
-    /* ... */
-    ngx_chain_t                     *out_bufs;
-    ngx_chain_t                     *busy_bufs;
-    ngx_chain_t                     *free_bufs;
-
-    ngx_int_t                      (*input_filter_init)(void *data);
-    ngx_int_t                      (*input_filter)(void *data, ssize_t bytes);
-    void                            *input_filter_ctx;
-    /* ... */
-    ngx_int_t                      (*create_request)(ngx_http_request_t *r);
-    ngx_int_t                      (*reinit_request)(ngx_http_request_t *r);
-    ngx_int_t                      (*process_header)(ngx_http_request_t *r);
-    void                           (*abort_request)(ngx_http_request_t *r);
-    void                           (*finalize_request)(ngx_http_request_t *r,
-                                         ngx_int_t rc);
-    ngx_int_t                      (*rewrite_redirect)(ngx_http_request_t *r,
-                                         ngx_table_elt_t *h, size_t prefix);
-    ngx_int_t                      (*rewrite_cookie)(ngx_http_request_t *r,
-                                         ngx_table_elt_t *h);
+```mermaid
+flowchart LR
+    FR["free_raw_bufs 受信に使える生バッファ"] -->|recv_chain| RAW["生バッファが埋まる"]
+    RAW -->|input_filter| IN["p.in 出力用 buf を shadow で紐付け"]
+    IN -->|output_filter| BUSY["p.busy 下流へ渡して送信待ち"]
+    IN -->|溢れたら| TMP["一時ファイルへ書き出し"]
+    TMP --> OUT["p.out ファイル参照の buf"]
+    OUT -->|output_filter| BUSY
+    BUSY -->|送信完了| FREE["p.free 再利用プール"]
+    FREE -->|last_shadow なら| FR
 ```
 
-**プロトコルごとに違うのは、この関数ポインタ群だけ。** `ngx_http_proxy_module` は `create_request` で HTTP のリクエスト行とヘッダを組み立て、`ngx_http_fastcgi_module` は FastCGI のレコードを組み立てる。それ以外 (接続、再試行、タイムアウト、キャッシュ、負荷分散、バッファ管理) は共通のコードが担当する。
+一時ファイル経由の枝があるので、**`out` と `in` の両方が「下流へ出すもの」を持ちうる**。`out` のほうが先に読み出されるので、順序は保たれる。
 
-`create_request` の返り値は `ngx_chain_t` ではなく、`u->request_bufs` に置く。**[buf のページ](../buf-chain/) のチェーンをそのまま組み立てて置いておく**ので、送信は `ngx_output_chain()` + `ngx_chain_writer()` の共通コードに任せられる。
+### shadow buffer
 
-`reinit_request` が別にあるのは、**再試行のため**。上流 A がエラーを返したら B に繋ぎ直すが、そのとき `request_bufs` を先頭から送り直さなければならない。プロトコルによって「巻き戻す」対象が違うので、専用のフックになっている。
+`p->input_filter` は生バッファを**コピーしない**。`ngx_buf_t` の殻だけを新しく取り、中身を丸ごと写して、双方向のリンクを張る。
 
-### 上流の状態遷移
-
-[`src/http/ngx_http_upstream.c#L1316-L1346`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L1316-L1346)。
-
-```c title="src/http/ngx_http_upstream.c"
-ngx_http_upstream_handler(ngx_event_t *ev)
-{
-    ngx_connection_t     *c;
-    ngx_http_request_t   *r;
-    ngx_http_upstream_t  *u;
-
-    c = ev->data;
-    r = c->data;
-
-    u = r->upstream;
-    c = r->connection;
-
-    ngx_http_set_log_request(c->log, r);
-    /* ... */
-    if (ev->write) {
-        u->write_event_handler(r, u);
-
-    } else {
-        u->read_event_handler(r, u);
+```c title="src/event/ngx_event_pipe.c#L983-L995 (ngx_event_pipe_copy_input_filter)"
+    cl = ngx_chain_get_free_buf(p->pool, &p->free);
+    if (cl == NULL) {
+        return NGX_ERROR;
     }
 
-    ngx_http_run_posted_requests(c);
-}
+    b = cl->buf;
+
+    ngx_memcpy(b, buf, sizeof(ngx_buf_t));
+    b->shadow = buf;
+    b->tag = p->tag;
+    b->last_shadow = 1;
+    b->recycled = 1;
+    buf->shadow = b;
 ```
 
-[ステートマシンのページ](../state-machine/) の `ngx_http_request_handler` と同じ形をしている。**接続レベルの handler は固定で、その中で状態に応じた handler に振り分ける。**
+`b` が出力用の buf、`buf` が生バッファ。`b->shadow` が生バッファを指し、`buf->shadow` が `b` を指す。**`b->pos` と `b->last` は生バッファのメモリを直接指しているので、`b` を下流に渡している間はその生バッファを再利用できない。** `last_shadow` が「このリンクの終端」を意味し、`recycled` が「使い回すバッファだ」の印になる。
 
-面白いのは `c` の付け替えだ。入ってきた `ev->data` は **上流への接続**で、そこから `r` を取り出したら、`c = r->connection` で **下流の接続**に上書きしている。以降のログや `ngx_http_run_posted_requests()` は下流の接続を基準にする。**「リクエストの本体はクライアント側の接続であって、上流はその付属物」** という位置づけが、この 2 行に表れている。
+chunked のときはもっと入り組む。1 枚の生バッファから複数のチャンクが切り出され、それが `b->shadow` で数珠つなぎになる。
 
-接続直後に handler が設定される ([`#L1644-L1657`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L1644-L1657))。
+```c title="src/http/modules/ngx_http_proxy_module.c#L2271-L2299 (ngx_http_proxy_chunked_filter)"
+    prev = &buf->shadow;
 
-```c title="src/http/ngx_http_upstream.c"
-    c = u->peer.connection;
+    for ( ;; ) {
 
-    c->requests++;
+        rc = ngx_http_parse_chunked(r, buf, &ctx->chunked,
+                                    plcf->upstream.pass_trailers);
 
-    c->data = r;
+        if (rc == NGX_OK) {
 
-    c->write->handler = ngx_http_upstream_handler;
-    c->read->handler = ngx_http_upstream_handler;
+            /* a chunk has been parsed successfully */
 
-    u->write_event_handler = ngx_http_upstream_send_request_handler;
-    u->read_event_handler = ngx_http_upstream_process_header;
+            cl = ngx_chain_get_free_buf(p->pool, &p->free);
+            /* ... */
+            b->pos = buf->pos;
+            b->start = buf->start;
+            b->end = buf->end;
+            b->tag = p->tag;
+            b->temporary = 1;
+            b->recycled = 1;
 
-    c->sendfile &= r->connection->sendfile;
-    u->output.sendfile = c->sendfile;
+            *prev = b;
+            prev = &b->shadow;
 ```
 
-`c->sendfile &= r->connection->sendfile` が地味に効いていて、**上流と下流の両方が `sendfile` を使えるときだけ有効にする**。片方が SSL なら落ちる。
+そして最後の 1 枚だけが `b->shadow = buf` と `b->last_shadow = 1` を持つ ([`#L2381-L2384`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_proxy_module.c#L2381-L2384))。できあがる形は `buf->shadow -> b1 -> b2 -> ... -> bn`、そして `bn->shadow == buf`。**片方向リストの終端が起点に戻る**。解放はこのリストをたどる。
 
-`ngx_event_connect_peer()` の返り値の扱いも語彙が豊富だ ([`#L1598-L1642`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L1598-L1642))。
+```c title="src/event/ngx_event_pipe.c#L1028-L1056"
+    b = buf->shadow;
 
-```c title="src/http/ngx_http_upstream.c"
-    rc = ngx_event_connect_peer(&u->peer);
-    /* ... */
-    if (rc == NGX_ERROR) {
-        ngx_http_upstream_finalize_request(r, u,
-                                           NGX_HTTP_INTERNAL_SERVER_ERROR);
-        return;
-    }
-    /* ... */
-    if (rc == NGX_BUSY) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no live upstreams");
-        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_NOLIVE);
+    if (b == NULL) {
         return;
     }
 
-    if (rc == NGX_DECLINED) {
-        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
-        return;
+    while (!b->last_shadow) {
+        next = b->shadow;
+
+        b->temporary = 0;
+        b->recycled = 0;
+
+        b->shadow = NULL;
+        b = next;
     }
 
-    /* rc == NGX_OK || rc == NGX_AGAIN || rc == NGX_DONE */
+    b->temporary = 0;
+    b->recycled = 0;
+    b->last_shadow = 0;
+
+    b->shadow = NULL;
+    buf->shadow = NULL;
 ```
 
-5 種類の返り値が全部違う意味を持つ。`NGX_ERROR` は諦める、`NGX_BUSY` は「生きているピアが無い」、`NGX_DECLINED` は「このピアがダメだったので次へ」、`NGX_OK` は即座に接続完了、`NGX_AGAIN` は接続中、`NGX_DONE` はキープアライブの再利用 ([接続の再利用のページ](../connection-reuse/))。
+**参照カウントを持たず、リストの終端まで到達したことで「全部解放された」とみなす。** `last_shadow` が 1 枚だけに立っているという不変条件に、まるごと寄りかかっている。
 
-**`NGX_BUSY` と `NGX_DECLINED` を分けている**のが実務的で、前者はログに `"no live upstreams"` を出す。運用でこのメッセージを見たことがある人は多いはずで、その出どころがここになる。
+生バッファを再利用リストに戻すのは `ngx_event_pipe_add_free_buf`。
 
-上流の接続には専用のプールが作られる ([`#L1663-L1673`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L1663-L1673))。
-
-```c title="src/http/ngx_http_upstream.c"
-    if (c->pool == NULL) {
-
-        /* we need separate pool here to be able to cache SSL connections */
-
-        c->pool = ngx_create_pool(128, r->connection->log);
-```
-
-**上流の接続はリクエストより長生きしうる** (keepalive で使い回す) ので、`r->pool` から取るわけにいかない。[メモリプールのページ](../memory-pool/) の「プールを選ぶことが寿命の宣言」がここに出ている。128 バイトという小ささも、「ほとんど何も入らない」ことを示している。
-
-### バッファリングありの中継
-
-ヘッダを読み終わると `ngx_http_upstream_send_response()` が呼ばれる。ここでモードが分岐する ([`#L3284-L3394`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3284-L3394))。
-
-```c title="src/http/ngx_http_upstream.c"
-    rc = ngx_http_send_header(r);
-
-    if (rc == NGX_ERROR || rc > NGX_OK || r->post_action) {
-        ngx_http_upstream_finalize_request(r, u, rc);
-        return;
+```c title="src/event/ngx_event_pipe.c#L1082-L1104"
+    if (p->free_raw_bufs == NULL) {
+        p->free_raw_bufs = cl;
+        cl->next = NULL;
+        return NGX_OK;
     }
 
-    u->header_sent = 1;
-```
+    if (p->free_raw_bufs->buf->pos == p->free_raw_bufs->buf->last) {
 
-**まず下流にヘッダを送ってしまう。** ボディが 1 バイトも来ていなくても送る。`proxy_buffering on` でもここは同じで、ヘッダは常に即座に転送される。
+        /* add the free buf to the list start */
 
-バッファリングありなら `ngx_event_pipe_t` を組み立てる ([`#L3490-L3602`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3490-L3602))。
-
-```c title="src/http/ngx_http_upstream.c"
-    p = u->pipe;
-
-    p->output_filter = ngx_http_upstream_output_filter;
-    p->output_ctx = r;
-    p->tag = u->output.tag;
-    p->bufs = u->conf->bufs;
-    p->busy_size = u->conf->busy_buffers_size;
-    p->upstream = u->peer.connection;
-    p->downstream = c;
-    p->pool = r->pool;
-    p->log = c->log;
-    p->limit_rate = ngx_http_complex_value_size(r, u->conf->limit_rate, 0);
-    p->start_sec = ngx_time();
-
-    p->cacheable = u->cacheable || u->store;
-
-    p->temp_file = ngx_pcalloc(r->pool, sizeof(ngx_temp_file_t));
-    /* ... */
-    } else {
-        p->temp_file->log_level = NGX_LOG_WARN;
-        p->temp_file->warn = "an upstream response is buffered "
-                             "to a temporary file";
+        cl->next = p->free_raw_bufs;
+        p->free_raw_bufs = cl;
+        return NGX_OK;
     }
 
-    p->max_temp_file_size = u->conf->max_temp_file_size;
-    p->temp_file_write_size = u->conf->temp_file_write_size;
+    /* the first free buf is partially filled, thus add the free buf after it */
+
+    cl->next = p->free_raw_bufs->next;
+    p->free_raw_bufs->next = cl;
 ```
 
-`"an upstream response is buffered to a temporary file"` は運用でよく見る警告で、**一時ファイルの構造体に警告文字列を持たせておいて、実際にファイルを作るときに出す**という作りになっている。
+**先頭が部分的に埋まっているバッファなら、その次に入れる。** `free_raw_bufs` の先頭は「まだ書き足せる場所」でなければならないという約束があり、それを崩さないための 3 分岐になっている。
 
-そして、ヘッダと一緒に読んでしまったボディの先頭部分を pipe に渡す ([`#L3543-L3581`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3543-L3581))。
+## 処理の流れ
 
-```c title="src/http/ngx_http_upstream.c"
-    p->preread_bufs = ngx_alloc_chain_link(r->pool);
-    /* ... */
-    p->preread_bufs->buf = &u->buffer;
-    p->preread_bufs->next = NULL;
-    u->buffer.recycled = 1;
+### `ngx_event_pipe()` — 書くと読むを交互に回す
 
-    p->preread_size = u->buffer.last - u->buffer.pos;
-    /* ... */
-    /*
-     * event_pipe would do u->buffer.last += p->preread_size
-     * as though these bytes were read
-     */
-    u->buffer.last = u->buffer.pos;
-```
-
-**「もう読んであるバイト列」を「これから読むもの」の形に偽装している。** `u->buffer.last` を巻き戻しておいて、pipe 側が普通に読んだかのように進める。特別扱いの分岐を入れる代わりに、データの形を揃えている。
-
-### 双方向のループ
-
-`ngx_event_pipe()` ([`src/event/ngx_event_pipe.c#L29-L58`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L29-L58))。
+[`src/event/ngx_event_pipe.c#L22-L100`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L22-L100)。関数の骨格はループ 1 つだけだ。
 
 ```c title="src/event/ngx_event_pipe.c"
     for ( ;; ) {
@@ -280,18 +218,21 @@ ngx_http_upstream_handler(ngx_event_t *ev)
     }
 ```
 
-**「書く → 読む」を、進まなくなるまで交互に回す。** 終了条件は「何も読めず、上流もブロックしていない」。
+**終了条件は「何も読めず、上流もブロックしていない」。** `p->read` は「この周回で 1 バイトでも読めたか」、`p->upstream_blocked` は「バッファが尽きたので下流に流したい」を意味する。読めていなくても、下流に流せば空きが作れるならもう 1 周する。
 
-`p->read` と `p->upstream_blocked` の 2 つで判定しているのが要点で、`upstream_blocked` は「バッファが尽きたので下流に流す必要がある」を意味する。読めていなくても、下流に流せば空きが作れるならもう 1 周する。
+`do_write` の初期値は呼び出し側が決める。上流の読みイベントから来たときは 0、下流の書きイベントから来たときは 1 になる。
 
-`p->log->action` の付け替えも実務的で、この文字列はエラーログの `while ...` の部分に出る。**タイムアウトしたときに「クライアントに送信中」だったのか「上流から読み取り中」だったのかが、ログから分かる。**
+```c title="src/http/ngx_http_upstream.c#L4340 と #L4386"
+        if (ngx_event_pipe(p, 1) == NGX_ABORT) {   /* process_downstream */
+        if (ngx_event_pipe(p, 0) == NGX_ABORT) {   /* process_upstream */
+```
 
-ループを抜けたら、イベントを再登録してタイマを張り直す ([`#L60-L100`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L60-L100))。
+`p->log->action` の付け替えも効いていて、この文字列はエラーログの `while ...` の部分に出る。**タイムアウトしたときに「クライアントに送信中」だったのか「上流から読み取り中」だったのかが、ログ 1 行で分かる。**
 
-```c title="src/event/ngx_event_pipe.c"
-    if (p->upstream
-        && p->upstream->fd != (ngx_socket_t) -1)
-    {
+ループを抜けたら、イベントを登録し直してタイマを張る。
+
+```c title="src/event/ngx_event_pipe.c#L60-L79"
+    if (p->upstream && p->upstream->fd != (ngx_socket_t) -1) {
         rev = p->upstream->read;
 
         flags = (rev->eof || rev->error) ? NGX_CLOSE_EVENT : 0;
@@ -311,36 +252,69 @@ ngx_http_upstream_handler(ngx_event_t *ev)
     }
 ```
 
-**「登録済みでまだ読めない」ときだけタイマを張り、「読める」ならタイマを消す。** 待っている時間だけタイムアウトを数えるという、正しい形になっている。同じことを下流の write に対してもやる。
+**「登録済みでまだ読めない」ときだけタイマを張り、「読める」ならタイマを消す。** 待っている時間だけをタイムアウトとして数える形になっている。同じことを下流の write に対しても行う ([`#L81-L97`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L81-L97))。ただし下流側には `p->downstream->data == p->output_ctx` という条件が付いていて、これは [サブリクエスト](../subrequest-postpone/) が絡む。
 
-### バッファが尽きたときの 4 段の逃げ道
+### `ngx_event_pipe_read_upstream()` — バッファをどこから取るか
 
-`ngx_event_pipe_read_upstream()` の中心 ([`#L224-L310`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L224-L310))。
+[`src/event/ngx_event_pipe.c#L103-L502`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L103-L502)。400 行あるが、中心は「受信先のバッファを決める」分岐にある。
 
-```c title="src/event/ngx_event_pipe.c"
+まず先読みぶんの特別扱い。
+
+```c title="src/event/ngx_event_pipe.c#L149-L166"
+        if (p->preread_bufs == NULL && !p->upstream->read->ready) {
+            break;
+        }
+
+        if (p->preread_bufs) {
+
+            /* use the pre-read bufs if they exist */
+
+            chain = p->preread_bufs;
+            p->preread_bufs = NULL;
+            n = p->preread_size;
+            /* ... */
+            if (n) {
+                p->read = 1;
+            }
+
+        } else {
+```
+
+`preread_bufs` があるときは `recv_chain` を呼ばず、`n = p->preread_size` としてそのまま先に進む。**「もう読んであるバイト列」を「たった今読んだバイト列」に化けさせている。** 仕込みは呼び出し側にある。
+
+```c title="src/http/ngx_http_upstream.c#L3543-L3581"
+    p->preread_bufs->buf = &u->buffer;
+    p->preread_bufs->next = NULL;
+    u->buffer.recycled = 1;
+
+    p->preread_size = u->buffer.last - u->buffer.pos;
+    /* ... */
+    /*
+     * event_pipe would do u->buffer.last += p->preread_size
+     * as though these bytes were read
+     */
+    u->buffer.last = u->buffer.pos;
+```
+
+`u->buffer.last` を巻き戻して「まだ読んでいないことにする」。特別扱いの分岐を `read_upstream` の中に増やす代わりに、データの形を揃えている。
+
+`preread_bufs` が無いときに、受信先を決める 4 段の分岐が走る。
+
+```c title="src/event/ngx_event_pipe.c#L224-L312"
             if (p->free_raw_bufs) {
 
                 /* use the free bufs if they exist */
 
                 chain = p->free_raw_bufs;
-                if (p->single_buf) {
-                    p->free_raw_bufs = p->free_raw_bufs->next;
-                    chain->next = NULL;
-                } else {
-                    p->free_raw_bufs = NULL;
-                }
+                /* ... single_buf なら 1 枚だけ切り出す ... */
 
             } else if (p->allocated < p->bufs.num) {
 
                 /* allocate a new buf if it's still allowed */
 
                 b = ngx_create_temp_buf(p->pool, p->bufs.size);
-                if (b == NULL) {
-                    return NGX_ABORT;
-                }
-
+                /* ... */
                 p->allocated++;
-                /* ... chain を作る ... */
 
             } else if (!p->cacheable
                        && p->downstream->data == p->output_ctx
@@ -353,10 +327,6 @@ ngx_http_upstream_handler(ngx_event_t *ev)
                  */
 
                 p->upstream_blocked = 1;
-
-                ngx_log_debug0(NGX_LOG_DEBUG_EVENT, p->log, 0,
-                               "pipe downstream ready");
-
                 break;
 
             } else if (p->cacheable
@@ -370,37 +340,115 @@ ngx_http_upstream_handler(ngx_event_t *ev)
 
                 rc = ngx_event_pipe_write_chain_to_temp_file(p);
                 /* ... */
+                chain = p->free_raw_bufs;
+
             } else {
 
                 /* there are no bufs to read in */
-
-                ngx_log_debug0(NGX_LOG_DEBUG_EVENT, p->log, 0,
-                               "no pipe bufs to read in");
-
                 break;
             }
 
             n = p->upstream->recv_chain(p->upstream, chain, limit);
 ```
 
-**4 段の if-else が、そのままメモリ圧の逃げ方の優先順位になっている。**
+**この if-else の並びが、そのままメモリ圧の逃げ方の優先順位になっている。**
 
-1. **空きバッファがあれば使う。** 下流に送り終わって返ってきたもの。
-2. **まだ確保していいなら確保する。** `proxy_buffers 8 4k;` の 8 個まで。
+1. **空きバッファを使う。** 下流に送り終わって返ってきたもの。コストは 0。
+2. **まだ確保していいなら確保する。** `proxy_buffers 8 4k;` の 8 枚まで。
 3. **下流が今すぐ書けるなら、書きに行く。** `upstream_blocked = 1` を立てて `break` すると、外側のループが `do_write = 1` で書き出しに回る。
-4. **一時ファイルに落とす。** `proxy_max_temp_file_size` (既定 1GB) まで。
+4. **一時ファイルに落とす。** `proxy_max_temp_file_size` (既定 1GB) まで。落としたぶんの生バッファが `free_raw_bufs` に戻ってくるので、それを使う。
 
-どれもダメなら「読まない」。上流の TCP 受信バッファが埋まり、ウィンドウが閉じ、上流が送るのをやめる。**フロー制御をカーネルに押し返している。**
+どれもダメなら読まない。上流の TCP 受信バッファが埋まり、ウィンドウが閉じ、上流が送るのをやめる。**フロー制御をカーネルに押し返している。**
 
-3 番目の条件に `p->downstream->data == p->output_ctx` があるのが重要で、これは「この接続で今出力してよいのは自分か」を確認している。[サブリクエストのページ](../subrequest-postpone/) の話につながる。
+3 番目に `p->cacheable` の否定が入っているのが重要で、**キャッシュするときは下流へ逃がす手が使えない**。キャッシュファイルは連続したバイト列として完成させる必要があるので、下流に流して捨てるわけにいかない。だから `cacheable` のときは 4 番目に落ちる。
 
-`recv_chain` を使っているので、**複数のバッファを 1 回の `readv()` で埋められる**。[buf のページ](../buf-chain/) の `iovec` へのまとめが読み側にもある。
+`recv_chain` を使っているので、複数のバッファを 1 回の `readv()` で埋められる ([buf-chain](../buf-chain/))。
 
-### 送信中のバッファ量を制限する
+### `input_filter` はいつ呼ばれるか
 
-`ngx_event_pipe_write_to_downstream()` ([`#L603-L679`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L603-L679))。
+読んだあとの後処理に、見落としやすい仕掛けがある。
 
-```c title="src/event/ngx_event_pipe.c"
+```c title="src/event/ngx_event_pipe.c#L349-L373"
+        while (cl && n > 0) {
+
+            ngx_event_pipe_remove_shadow_links(cl->buf);
+
+            size = cl->buf->end - cl->buf->last;
+
+            if (n >= size) {
+                cl->buf->last = cl->buf->end;
+
+                /* STUB */ cl->buf->num = p->num++;
+
+                if (p->input_filter(p, cl->buf) == NGX_ERROR) {
+                    return NGX_ABORT;
+                }
+
+                n -= size;
+                ln = cl;
+                cl = cl->next;
+                ngx_free_chain(p->pool, ln);
+
+            } else {
+                cl->buf->last += n;
+                n = 0;
+            }
+        }
+```
+
+**`input_filter` が呼ばれるのは、バッファが端まで埋まったときだけ。** 途中までしか埋まらなかったバッファは `free_raw_bufs` に戻され、次の受信で書き足される。
+
+だから、部分的にしか埋まっていないデータを下流へ出す経路が別に要る。それが 2 つある。
+
+```c title="src/event/ngx_event_pipe.c#L448-L487"
+    if (p->free_raw_bufs && p->length != -1) {
+        cl = p->free_raw_bufs;
+
+        if (cl->buf->last - cl->buf->pos >= p->length) {
+
+            p->free_raw_bufs = cl->next;
+            p->input_filter(p, cl->buf);
+            ngx_free_chain(p->pool, cl);
+        }
+    }
+
+    if (p->length == 0) {
+        p->upstream_done = 1;
+        p->read = 1;
+    }
+
+    if ((p->upstream_eof || p->upstream_error) && p->free_raw_bufs) {
+        p->input_filter(p, p->free_raw_bufs->buf);
+        p->free_raw_bufs = p->free_raw_bufs->next;
+        /* ... free_bufs なら未使用の生バッファを ngx_pfree ... */
+    }
+```
+
+「残り `p->length` バイトが揃った」ときと、「上流が終わった」ときだ。**`proxy_buffering on` で応答が下流に出るタイミングは、バッファが 1 枚埋まるか、応答が終わるか、のどちらかになる。** 中途半端に溜まっている状態では出ない。これがバッファリングの実体で、SSE のようなストリーミングが `proxy_buffering on` で止まって見える理由になる。
+
+最後にキャッシュ用の書き出しが入る。
+
+```c title="src/event/ngx_event_pipe.c#L489-L499"
+    if (p->cacheable && (p->in || p->buf_to_file)) {
+
+        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, p->log, 0,
+                       "pipe write chain");
+
+        rc = ngx_event_pipe_write_chain_to_temp_file(p);
+
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+```
+
+**キャッシュするときは、読むたびに毎回一時ファイルへ書く。** メモリが逼迫していなくても書く。同じパイプの中でキャッシュファイルが組み立てられていくので、完成したら `ngx_ext_rename_file` で所定の場所に移すだけでよい ([file-cache](../file-cache/))。
+
+### `ngx_event_pipe_write_to_downstream()` — 送信中の量を測る
+
+[`src/event/ngx_event_pipe.c#L505-L738`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L505-L738)。まず `busy` にあるバッファの合計サイズを数える。
+
+```c title="src/event/ngx_event_pipe.c#L603-L628"
         /* bsize is the size of the busy recycled bufs */
 
         prev = NULL;
@@ -424,15 +472,13 @@ ngx_http_upstream_handler(ngx_event_t *ev)
         }
 ```
 
-`p->busy` は「下流に渡したがまだ送り終わっていない」チェーン。その合計サイズが `busy_size` (`proxy_busy_buffers_size`、既定でバッファ 2 個ぶん) を超えたら、**新しいバッファを渡すのをやめて、今あるものを吐き出すことに専念する**。
+`p->busy` は「下流に渡したがまだ送り終わっていない」チェーン。合計が `busy_size` (`proxy_busy_buffers_size`、既定でバッファ 2 枚ぶん) を超えたら、**新しいバッファを渡すのをやめて、今あるものを吐き出すことに専念する**。
 
-`prev == cl->buf->start` で同じ実体を数え重ねないようにしているのが、[buf のページ](../buf-chain/) の `shadow` の話につながる。1 枚の生バッファから切り出された複数の buf が `busy` に並ぶので、**実体のサイズは 1 回だけ数える**。
+`prev == cl->buf->start` の判定が shadow の話に直結している。1 枚の生バッファから切り出された複数の buf が `busy` に並ぶので、**実体のサイズを 1 回だけ数える**。`recycled` が立っていない buf は数えない。一時ファイルから読んだ buf は `recycled` ではないので、この計算に入らない。
 
-`recycled` フラグが「これは使い回すバッファだ」の印になっている。一時ファイルから読んだ buf は `recycled` ではないので、この計算に入らない。
+上流が終わったときの処理が対照的だ。
 
-上流が終わったときの処理が対照的だ ([`#L539-L556`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L539-L556))。
-
-```c title="src/event/ngx_event_pipe.c"
+```c title="src/event/ngx_event_pipe.c#L539-L556"
         if (p->upstream_eof || p->upstream_error || p->upstream_done) {
 
             /* pass the p->out and p->in chains to the output filter */
@@ -450,13 +496,120 @@ ngx_http_upstream_handler(ngx_event_t *ev)
                 rc = p->output_filter(p->output_ctx, p->out);
 ```
 
-**上流が終わったら `recycled` を全部落とす。** もう読むことがないので、バッファを使い回す必要がない。`busy_size` の制限も無意味になる。残っているものを一気に下流へ渡す。
+**上流が終わったら `recycled` を全部落とす。** もう読むことがないのでバッファを使い回す必要がなく、`busy_size` の制限も無意味になる。フラグを落とすことで制限が自動的に無効になるので、「終了モードかどうか」の分岐をあちこちに書かずに済んでいる。
 
-フラグを落とすことで制限が自動的に無効になる、という書き方になっていて、「終了モードかどうか」の分岐をあちこちに書かずに済んでいる。
+書き出したあとの後始末で、生バッファが `free_raw_bufs` に戻る。
 
-### バッファリングなしのモード
+```c title="src/event/ngx_event_pipe.c#L698-L734"
+        rc = p->output_filter(p->output_ctx, out);
 
-`proxy_buffering off;` のときは pipe を使わない ([`src/http/ngx_http_upstream.c#L3968-L4039`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3968-L4039))。
+        ngx_chain_update_chains(p->pool, &p->free, &p->busy, &out, p->tag);
+        /* ... */
+        for (cl = p->free; cl; cl = cl->next) {
+
+            if (cl->buf->temp_file) {
+                if (p->cacheable || !p->cyclic_temp_file) {
+                    continue;
+                }
+
+                /* reset p->temp_offset if all bufs had been sent */
+
+                if (cl->buf->file_last == p->temp_file->offset) {
+                    p->temp_file->offset = 0;
+                }
+            }
+
+            /* add the free shadow raw buf to p->free_raw_bufs */
+
+            if (cl->buf->last_shadow) {
+                if (ngx_event_pipe_add_free_buf(p, cl->buf->shadow) != NGX_OK) {
+                    return NGX_ABORT;
+                }
+
+                cl->buf->last_shadow = 0;
+            }
+
+            cl->buf->shadow = NULL;
+        }
+```
+
+`ngx_chain_update_chains` が「送り終わった buf」を `busy` から `free` に移す。そのうえで **`last_shadow` が立っているものだけ**、対応する生バッファを `free_raw_bufs` に返す。1 枚の生バッファから 5 個の buf を切り出したなら、返すのは 5 個目を送り終わったときの 1 回だけになる。
+
+`cyclic_temp_file` が立っているときは、一時ファイルの中身を全部送り終わったら `offset` を 0 に戻して先頭から書き直す。ディスク使用量を抑えるための仕掛けだが、代償として `sendfile` が切られる。
+
+```c title="src/http/ngx_http_upstream.c#L3583-L3596"
+    if (u->conf->cyclic_temp_file) {
+
+        /*
+         * we need to disable the use of sendfile() if we use cyclic temp file
+         * because the writing a new data may interfere with sendfile()
+         * that uses the same kernel file pages (at least on FreeBSD)
+         */
+
+        p->cyclic_temp_file = 1;
+        c->sendfile = 0;
+
+    } else {
+        p->cyclic_temp_file = 0;
+    }
+```
+
+**同じカーネルのページを `sendfile()` が読んでいる最中に上書きする**という危険を、機能を切ることで避けている。
+
+### 一時ファイルへの書き出し
+
+[`src/event/ngx_event_pipe.c#L741-L952`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L741-L952)。`p->cacheable` かどうかで振る舞いが分かれる。
+
+```c title="src/event/ngx_event_pipe.c#L784-L816"
+    if (!p->cacheable) {
+
+        size = 0;
+        cl = out;
+        prev_last_shadow = 1;
+        /* ... */
+        do {
+            bsize = cl->buf->last - cl->buf->pos;
+            /* ... */
+            if (prev_last_shadow
+                && ((size + bsize > p->temp_file_write_size)
+                    || (p->temp_file->offset + size + bsize
+                        > p->max_temp_file_size)))
+            {
+                break;
+            }
+
+            prev_last_shadow = cl->buf->last_shadow;
+
+            size += bsize;
+            ll = &cl->next;
+            cl = cl->next;
+
+        } while (cl);
+```
+
+非キャッシュのときは `temp_file_write_size` ぶんずつ区切って書く。**区切ってよいのは `prev_last_shadow` が立っている位置だけ**で、同じ生バッファから切り出された buf 群の途中では切らない。切ると、片方だけ書き出されて生バッファが返せなくなる。キャッシュのときは区切らず `p->in` を丸ごと書く。ファイルを完成させるのが目的なので、書き惜しむ理由がない。
+
+書き終わったら、ファイル上の領域を指す buf を `p->out` に足す ([`#L872-L912`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L872-L912))。ここで `p->out` の末尾の `file_last` が今の `offset` と一致していれば、新しい buf を作らずに `file_last` を伸ばす。**連続していれば既存の buf を伸ばす**ので、追記し続ける限り `p->out` は 1 要素で済む。
+
+最後に生バッファが解放される ([`#L923-L949`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L923-L949))。判定はここでも `b->last_shadow` 1 本で、立っているものだけ `b->shadow` を `pos = last = start` に巻き戻して `free_raw_bufs` の末尾に繋ぐ。
+
+### 非バッファ経路
+
+`proxy_buffering off;` のときは pipe を使わない。`ngx_http_upstream_send_response` が別のハンドラを差す。
+
+```c title="src/http/ngx_http_upstream.c#L3344-L3352"
+        if (u->input_filter == NULL) {
+            u->input_filter_init = ngx_http_upstream_non_buffered_filter_init;
+            u->input_filter = ngx_http_upstream_non_buffered_filter;
+            u->input_filter_ctx = r;
+        }
+
+        u->read_event_handler = ngx_http_upstream_process_non_buffered_upstream;
+        r->write_event_handler =
+                             ngx_http_upstream_process_non_buffered_downstream;
+```
+
+本体は `ngx_http_upstream_process_non_buffered_request` ([`src/http/ngx_http_upstream.c#L3947-L4077`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3947-L4077))。
 
 ```c title="src/http/ngx_http_upstream.c"
     b = &u->buffer;
@@ -469,25 +622,14 @@ ngx_http_upstream_handler(ngx_event_t *ev)
 
             if (u->out_bufs || u->busy_bufs || downstream->buffered) {
                 rc = ngx_http_output_filter(r, u->out_bufs);
-
-                if (rc == NGX_ERROR) {
-                    ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
-                    return;
-                }
-
+                /* ... */
                 ngx_chain_update_chains(r->pool, &u->free_bufs, &u->busy_bufs,
                                         &u->out_bufs, u->output.tag);
             }
 
             if (u->busy_bufs == NULL) {
+                /* ... length == 0 や eof なら finalize ... */
 
-                if (u->length == 0
-                    || (upstream->read->eof && u->length == -1))
-                {
-                    ngx_http_upstream_finalize_request(r, u, 0);
-                    return;
-                }
-                /* ... エラー判定 ... */
                 b->pos = b->start;
                 b->last = b->start;
             }
@@ -504,17 +646,10 @@ ngx_http_upstream_handler(ngx_event_t *ev)
             }
 
             if (n > 0) {
-                u->state->bytes_received += n;
-                u->state->response_length += n;
-
-                if (u->input_filter(u->input_filter_ctx, n) == NGX_ERROR) {
-                    ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
-                    return;
-                }
+                u->input_filter(u->input_filter_ctx, n);
             }
 
             do_write = 1;
-
             continue;
         }
 
@@ -522,101 +657,114 @@ ngx_http_upstream_handler(ngx_event_t *ev)
     }
 ```
 
-**バッファは `u->buffer` の 1 枚だけ。** 読んで、`input_filter` でチェーンに切り出して、下流に流して、全部送り終わったら (`u->busy_bufs == NULL`) バッファを先頭に巻き戻して再利用する。
+**バッファは `u->buffer` の 1 枚だけ。** 読んで、`input_filter` でチェーンに切り出して、下流に流して、全部送り終わったら (`u->busy_bufs == NULL`) 先頭に巻き戻して再利用する。省略した `busy_bufs == NULL` の中では終了条件が 3 通りに書き分けられていて、`u->length == 0` または `eof && length == -1` なら正常終了、`eof && length > 0` なら `"upstream prematurely closed connection"` の 502、`read->error || u->error` なら無言の 502 になる。
 
-`ngx_event_pipe` と同じ「書く → 読む」の交互ループだが、**バッファの管理がまるごと無い**。溜められないので、下流が遅ければ上流を待たせるしかない。
+`ngx_event_pipe` と同じ「書く → 読む」の交互ループだが、**バッファ管理がまるごと無い**。`free_raw_bufs` も `shadow` も `busy_size` も一時ファイルも出てこない。`ngx_event_pipe.c` の 1146 行に対して、こちらは 130 行で済んでいる。
 
-構造としてはこちらのほうが単純で、pipe の複雑さがそのまま「溜める」ことのコストになっている。
+`proxy_buffering off` にすると変わるのはこの 4 点になる。
 
-`u->length` が「あと何バイト来るはずか」で、`-1` は「分からない」(chunked や `Connection: close` の場合)。`length == 0` で正常終了、`read->eof && length == -1` でも正常終了、`read->eof && length > 0` なら `"upstream prematurely closed connection"`。**3 つの終了条件が明示的に書き分けられている。**
+- 溜められないので、下流が遅ければ上流を待たせる。上流の接続が長く占有される。
+- `input_filter` が受信のたびに必ず呼ばれるので、1 バイトでも来れば下流へ流れる。
+- キャッシュが効かない。`send_response` の先頭で `ngx_http_file_cache_free` が呼ばれる。
+- `r->limit_rate = 0` が明示的に設定される ([`#L3354-L3355`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_upstream.c#L3354))。速度制限は溜めることを前提にしているので、非バッファでは無効になる。
 
-## なぜそうなっているか
+## 守られている不変条件
 
-### 6 本の関数ポインタが「プロトコルの違い」を全部吸収する
+**`last_shadow` は shadow のリンク 1 本につき 1 枚だけに立つ。** これが破れると `ngx_event_pipe_remove_shadow_links` の `while (!b->last_shadow)` が止まらず、生バッファが二重に `free_raw_bufs` に入る。参照カウントを持たない設計は、全部この 1 つの条件に乗っている。
 
-proxy / FastCGI / uwsgi / SCGI / gRPC / memcached の 6 モジュールが、`ngx_http_upstream_t` の同じ枠組みに乗っている。共通コードが担当するのは、接続、SSL、再試行、負荷分散、タイムアウト、キャッシュ、バッファ管理、一時ファイル、レート制限。**プロトコルごとに書くのは「バイト列の組み立て」と「バイト列の解釈」だけ。**
+**`free_raw_bufs` の先頭は、部分的に埋まっているバッファかもしれない。それ以外は空でなければならない。** `ngx_event_pipe_add_free_buf` の 3 分岐がこれを維持する。受信側は先頭から順に `recv_chain` に渡すので、この順序が崩れると書き込み位置がずれる。
 
-これが成立するのは、**リバースプロキシの仕事のうち、プロトコル固有の部分が実は少ない**からだ。切り口の見つけ方として学ぶところがある。「HTTP プロキシ」「FastCGI プロキシ」と縦に切ると共通部分が重複するが、「バイト列の変換」と「中継の制御」で横に切ると、後者が全部共通になる。
+**`p->busy` に入っている `recycled` な buf の合計は `busy_size` を超えない。** 超えそうなときは新しい buf を渡さず、`flush` に飛ぶ。この上限があるので、`proxy_buffers` で確保したバッファが全部下流側に滞留して読むぶんが無くなる、ということが起きない。
 
-`input_filter` の契約も巧妙で、「今 `u->buffer` に `bytes` バイト増えたので、`u->out_bufs` に下流へ出すぶんを積め」という形になっている。HTTP なら素通し、chunked なら chunk ヘッダを除去、gRPC なら HTTP/2 フレームを剥がす。**「何バイト読んだか」だけを渡して、解釈は各自に任せる。**
+**上流の終了理由は `upstream_done` / `upstream_eof` / `upstream_error` の 3 つで、意味が違う。** `done` は「期待したバイト数を受け取った」、`eof` は「相手が閉じた」、`error` は「エラーが起きた」。呼び出し側はこれを見分けて結果を変える。
 
-### バッファリングありとなしを両方持つ理由
+```c title="src/http/ngx_http_upstream.c#L4477-L4490"
+            if (p->upstream_done
+                || (p->upstream_eof && p->length == -1))
+            {
+                ngx_http_upstream_finalize_request(r, u, 0);
+                return;
+            }
 
-`proxy_buffering on` (既定) は **上流を早く解放する**。100MB の応答なら、上流からは全速力で受け取って一時ファイルに落とし、クライアントには時間をかけて送る。上流のワーカーは早く次のリクエストに移れる。
+            if (p->upstream_eof) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "upstream prematurely closed connection");
+            }
 
-`proxy_buffering off` は **レイテンシと逐次性を優先する**。SSE や長いストリーミング応答では、溜められると意味がない。
+            ngx_http_upstream_finalize_request(r, u, NGX_HTTP_BAD_GATEWAY);
+```
 
-両方を実装するコストは大きい (`ngx_event_pipe.c` が 1000 行、非バッファ版が 200 行)。それでも両方あるのは、**この 2 つが本質的に違う要求だから**だ。片方をもう片方のパラメータ (バッファサイズ 0) として表現しようとすると、どちらも中途半端になる。
+`eof` でも `p->length == -1` (長さが不明) なら正常終了とみなす。`Connection: close` で終わりを示す応答がこれに当たる。長さが分かっているのに `eof` が来たら `"upstream prematurely closed connection"` になる。
 
-### 4 段の逃げ道は、優先順位の宣言になっている
+**`downstream_error` が立ったら、チェーンは全部 `p->free` に回収される。** `ngx_event_pipe_drain_chains` ([`#L1108-L1146`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L1108-L1146)) が `busy` / `out` / `in` を順に空にし、`last_shadow` の生バッファを返す。下流が死んでも、キャッシュのためにパイプが回り続けることがあるので、その回収経路が要る。
 
-「メモリが足りない」に対する対処を、コストの安い順に並べてある。
+## つまずきどころ
 
-1. 空きの再利用 (コスト 0)
-2. 新規確保 (メモリを消費)
-3. 下流へ流す (syscall、ただしメモリが空く)
-4. ディスクへ落とす (syscall + ディスク I/O)
-5. 読むのをやめる (上流を待たせる)
+### `proxy_buffering on` はバッファが埋まるまで下流に出さない
 
-**この順序が `if-else` の並びとしてそのまま読める**のが、この関数の一番良いところだ。どの条件で何が起きるかが、設定値 (`proxy_buffers` / `proxy_max_temp_file_size`) と 1 対 1 に対応する。
+`input_filter` が呼ばれるのは「バッファが端まで埋まった」「残り `p->length` バイトが揃った」「上流が終わった」の 3 つだけだ。それ以外のとき、受信済みのバイト列は `free_raw_bufs` の先頭に居座る。
 
-そして最後の逃げ道が「何もしない」であることに意味がある。**フロー制御を TCP に押し返す**という選択肢を最後に置いておけば、どんな場合でも破綻しない。無理にメモリを確保しに行かない。
+`proxy_buffer_size 4k;` の下で 100 バイトずつゆっくり送ってくる上流に繋ぐと、40 回ぶん溜まるまで下流に何も出ない。ストリーミングが必要なら `proxy_buffering off` を選ぶしかなく、これはチューニングではなく**別の経路に切り替える**操作になる。
 
-### `busy_size` は「渡したまま返ってこない」を測る
+### `cacheable` のとき、逃げ道が 1 つ消える
 
-下流への `ngx_http_output_filter()` は、[出力フィルタチェーン](../output-filter-chain/) を通って `ngx_http_write_filter` に行き着く。そこで送り切れなければ `r->out` に溜まる。溜まったぶんのバッファは、pipe から見ると「渡したまま返ってこない」状態になる。
+受信バッファを取る 4 段の分岐のうち、3 番目 (下流へ流す) には `!p->cacheable` が付いている。キャッシュ有効時は「バッファが尽きたら必ず一時ファイル」になる。
 
-これを放置すると、`proxy_buffers` で確保したバッファが全部下流側に滞留して、上流から読むぶんが無くなる。`busy_size` はその上限を決めている。
+つまり `proxy_cache` を有効にすると、**メモリに余裕があってもディスク I/O が増える**。読むたびに `write_chain_to_temp_file` が走る `p->cacheable` 分岐 ([`#L489-L499`](https://github.com/nginx/nginx/blob/release-1.31.4/src/event/ngx_event_pipe.c#L489)) と合わせて、キャッシュのコストは「保存 1 回ぶん」では済まない。
 
-既定値がバッファ 2 個ぶんなのは、**「1 個を送信中、1 個を次に送る準備」で十分**という判断だろう。多くしても下流の送信速度は上がらず、上流から読むためのバッファが減るだけになる。
+### `shadow` は追いにくく、参照カウントのほうが素直
 
-### `recycled` フラグを落とすことで制限を解除する
+1 枚の生バッファから切り出された複数の buf が、`in` / `out` / `busy` / `free` / `free_raw_bufs` の 5 本を行き来する。所有権を表すのは `last_shadow` の 1 ビットだけで、リストの終端まで歩かないと状態が分からない。
 
-上流が終わったときに `recycled = 0` を一括で立てる (落とす) のは、**「もう使い回さないバッファ」を宣言する**ことで `busy_size` の計算から除外する仕掛けだ。
+`busy_size` の計算で `prev == cl->buf->start` と比較しているのも、`temp_file_write_size` で区切る位置に `prev_last_shadow` を見ているのも、全部この構造の後始末になっている。**同じことをするなら、生バッファに参照カウントを持たせるほうが読みやすい。** メモリプールを使う設計 ([memory-pool](../memory-pool/)) では個別解放をしないので、カウンタを置く場所が自然に無かった、という事情はある。
 
-「終了モードなら制限しない」という `if` をあちこちに書く代わりに、**制限の計算対象を決めるフラグを 1 箇所で落とす**。フラグの意味 (「使い回す予定のバッファ」) が、そのまま「制限の対象」の定義になっているので、この操作が自然に読める。
+### `p->length` はバイト数とは限らない
 
-### `preread_bufs` はデータの形を揃えるための偽装
+`ngx_event_pipe_copy_input_filter` は `p->length` をバイト数として減算する。だが chunked のときの proxy は `p->length = 5` を「`"0" CRLF CRLF` を見たい」の意味で使い、`ngx_http_parse_chunked` の途中経過で書き換える。
 
-ヘッダを読むときに、ボディの先頭も一緒に受信バッファに入ってしまう。これを pipe に渡す方法は 2 つある。特別なフィールドとして持って `read_upstream` に分岐を足すか、「これから読むバッファ」の形にして普通に処理させるか。
+```c title="src/http/modules/ngx_http_proxy_module.c#L2358-L2364"
+        if (rc == NGX_AGAIN) {
 
-Nginx は後者で、`u->buffer.last` を巻き戻して「まだ読んでいないことにする」。`p->preread_size` を渡しておくので、pipe 側は `recv()` を呼ぶ代わりにその値を使う。
+            /* set p->length, minimal amount of data we want to see */
 
-**新しいケースを追加するのではなく、既存のケースに合流させる。** 分岐が増えない代わりに、少し嘘をついている (`u->buffer.last` が実際のデータ量と一致しない期間がある)。コメントで明示してあるのがせめてもの誠実さだ。
+            p->length = ctx->chunked.length;
 
-## どう活かすか
+            break;
+        }
+```
 
-### そのまま真似できるところ
+`read_upstream` の `cl->buf->last - cl->buf->pos >= p->length` という判定は、この両方の意味で正しく動くように書かれている。「あと何バイトあれば前に進めるか」という共通の解釈に落ちている。
 
-**プロトコル依存の部分を「バイト列の組み立て」と「バイト列の解釈」に絞り込む。** 中継・再試行・タイムアウト・負荷分散は、プロトコルに依存しない。この切り方ができると、対応プロトコルを増やすコストが劇的に下がる。
+### `flushed++ > 10` は AIO のための回避策
 
-**メモリ圧への対処を、コストの安い順に並べた `if-else` として書く。** 再利用 → 確保 → 押し出す → 退避 → 諦める。この並び自体がドキュメントになる。
+```c title="src/event/ngx_event_pipe.c#L686-L696"
+        if (out == NULL) {
 
-**最後の逃げ道を「何もしない」にする。** 読むのをやめれば TCP のウィンドウが閉じ、送信側が止まる。バックプレッシャーを下位層に押し返す設計は、どんな負荷でも破綻しない。gRPC や HTTP/2 のフロー制御、リアクティブストリームの `request(n)` も同じ思想になっている。
+            if (!flush) {
+                break;
+            }
 
-**in-flight のデータ量に上限を設ける。** 「渡したがまだ完了していない」を測って制限する。非同期の中継では、これが無いとメモリが片側に偏る。
+            /* a workaround for AIO */
+            if (flushed++ > 10) {
+                return NGX_BUSY;
+            }
+        }
+```
 
-**制限の解除を、フラグを落とすことで表す。** 「終了モードなら制限しない」を各所の `if` に書くのではなく、制限の計算対象を決めるフラグを 1 箇所で操作する。
+`busy_size` を超えていて `flush = 1` なのに送るものが無い、という状態が 11 回続いたら `NGX_BUSY` で抜ける。`ngx_event_pipe()` はこれを見て `NGX_OK` を返して帰る。非同期 I/O が完了していないと `busy` がいつまでも減らないので、無限ループを避けるための上限になっている ([blocking-io](../blocking-io/))。
 
-**待っている間だけタイムアウトを数える。** 「イベント登録済みでまだ準備できていない」ときだけタイマを張り、準備できたら消す。素朴に「処理開始からの経過時間」でタイムアウトすると、正常に進んでいる転送を切ってしまう。
+コメントに `workaround` と書いてあるとおり、構造的な解決ではない。11 という数字にも根拠はない。
 
-**エラーログに「何をしていたか」を残す。** `p->log->action` を "sending to client" と "reading upstream" で切り替える。タイムアウトの原因切り分けが、ログ 1 行でできるようになる。
+### 一時ファイルは黙って作られない
 
-**再試行のための「巻き戻し」を、最初から契約に入れる。** `reinit_request` が独立したフックとして存在するのは、後付けでは入れにくい。上流を切り替える可能性があるなら、「送信内容を再生成できる」を最初から前提にする。
+```c title="src/http/ngx_http_upstream.c#L3527-L3531"
+    } else {
+        p->temp_file->log_level = NGX_LOG_WARN;
+        p->temp_file->warn = "an upstream response is buffered "
+                             "to a temporary file";
+    }
+```
 
-### 取り込むべきでない条件
+キャッシュ目的でない一時ファイルが作られると警告が出る。**警告文字列を構造体に持たせておいて、実際にファイルを作るときに出す**という作りになっている。このメッセージが出ているなら、`proxy_buffers` が応答サイズに足りていない。
 
-**`ngx_event_pipe.c` の複雑さは、そのまま「溜める」ことのコスト。** 1000 行のうち大半が、バッファの状態遷移と一時ファイルへの退避に費やされている。溜める必要が本当にあるかを先に問う。非バッファ版が 200 行で済んでいることが、その差を示している。
-
-**`shadow` と `recycled` と `busy` の絡み合いは、追いにくい。** 1 枚の生バッファから切り出された複数の buf が、`in` / `out` / `busy` / `free` / `free_raw_bufs` の 5 本のリストを行き来する。Nginx のコードで最も読みにくい部分の 1 つで、実際バグの報告も出ている。同じことをするなら、参照カウントを持たせるほうが素直になる。
-
-**`u->buffer.last` を巻き戻す種類の「偽装」は、コメントが無いと事故になる。** 短期的には分岐が減って綺麗に見えるが、その構造体を触る他のコードが前提を壊しうる。
-
-**一時ファイルへの退避は、ディスクを圧迫する。** `proxy_max_temp_file_size` の既定が 1GB で、同時接続が多いと合計が跳ね上がる。「メモリが足りなければディスク」は無条件に安全な逃げ道ではない。
-
-## 関連
-
-- pipe が扱う buf のフラグ (`recycled` / `shadow` / `last_shadow`) は [buf と chain のページ](../buf-chain/)。
-- `p->output_filter` から先は [出力フィルタチェーンのページ](../output-filter-chain/)。
-- `p->downstream->data == p->output_ctx` の判定の意味は [サブリクエストのページ](../subrequest-postpone/)。
-- `ngx_event_connect_peer()` が `NGX_DONE` を返す経路は [接続の再利用のページ](../connection-reuse/)。
+`proxy_max_temp_file_size` の既定は 1GB で、同時接続が多いと合計が跳ね上がる。「メモリが足りなければディスク」は無条件に安全な逃げ道ではない。

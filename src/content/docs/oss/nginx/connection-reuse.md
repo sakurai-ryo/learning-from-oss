@@ -1,9 +1,9 @@
 ---
 title: "接続を張り直さないために、キャッシュと「足りなくなったら古いものから切る」を組み合わせる"
 description: "worker_connections は固定長の配列で、確保はフリーリストの先頭を取るだけ。枯渇したときは「切ってもいい接続」の LRU から古い順に閉じる。上流への接続は keepalive モジュールがキューにしまい、取り出すときは NGX_DONE を返して「接続済み」を伝える。しまわれた接続は読みイベントを張ったまま、相手の切断を検出する。"
-group: "上流とデータの流れ"
+group: "設計の掘り下げ"
 sidebar:
-  order: 18
+  order: 44
 ---
 
 ## 何を学んだか
@@ -163,7 +163,7 @@ ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
 
 **呼ぶたびに先頭へ移動する。** `reusable = 1` で再度呼べば、いったん外して先頭に入れ直すので、それが LRU の更新になる。キューのリンクは `ngx_connection_t` の中の `queue` メンバなので、追加の確保が要らない ([タイマのページ](../timer-rbtree/) の侵入型と同じ)。
 
-呼ばれる場所が意味を持っている。[ステートマシンのページ](../state-machine/) で見た `ngx_http_wait_request_handler` では、
+呼ばれる場所が意味を持っている。[accept から接続までのページ](../accept-to-connection/) で見た `ngx_http_wait_request_handler` では、
 
 ```c title="src/http/ngx_http_request.c"
     if (n == NGX_AGAIN) {
@@ -238,7 +238,7 @@ ngx_drain_connections(ngx_cycle_t *cycle)
 }
 ```
 
-**空きが全体の 1/16 を切ったら発動する。** 閉じる数は `min(32, reusable/8)` で、最低 1 個。一度に全部閉じないのは、[ステートマシンのページ](../state-machine/) の「1 周を長くしない」という規律と、**閉じすぎて無駄にしないため**だ。
+**空きが全体の 1/16 を切ったら発動する。** 閉じる数は `min(32, reusable/8)` で、最低 1 個。一度に全部閉じないのは、[ワーカーの 1 周のページ](../state-machine/) の「1 周を長くしない」という規律と、**閉じすぎて無駄にしないため**だ。
 
 閉じ方が独特で、**`c->close = 1` を立てて読み handler を直接呼ぶ**。「閉じてくれ」というフラグを立てて、その接続自身の状態機械に片付けさせる。keepalive 待ちなら `ngx_http_keepalive_handler` が、リクエスト待ちなら `ngx_http_wait_request_handler` が、`c->close` を見て自分で終了処理をする。
 
@@ -250,7 +250,7 @@ ngx_drain_connections(ngx_cycle_t *cycle)
 
 ### 上流への接続をしまう
 
-`ngx_http_upstream_keepalive_module` は、[upstream のページ](../upstream-event-pipe/) の負荷分散の層に割り込む形で実装されている ([`src/http/modules/ngx_http_upstream_keepalive_module.c#L29-L60`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_upstream_keepalive_module.c#L29-L60))。
+`ngx_http_upstream_keepalive_module` は、[upstream のページ](../upstream/) の負荷分散の層に割り込む形で実装されている ([`src/http/modules/ngx_http_upstream_keepalive_module.c#L29-L60`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_upstream_keepalive_module.c#L29-L60))。
 
 ```c title="src/http/modules/ngx_http_upstream_keepalive_module.c"
 typedef struct {
@@ -321,9 +321,9 @@ found:
     return NGX_DONE;
 ```
 
-**キャッシュを線形探索して、アドレスが一致するものを探す。** 見つからなければ `NGX_OK` で、[upstream のページ](../upstream-event-pipe/) の `ngx_event_connect_peer()` が普通に `connect()` する。見つかれば `NGX_DONE`。
+**キャッシュを線形探索して、アドレスが一致するものを探す。** 見つからなければ `NGX_OK` で、[upstream のページ](../upstream/) の `ngx_event_connect_peer()` が普通に `connect()` する。見つかれば `NGX_DONE`。
 
-`NGX_DONE` が **「接続処理は完了している、`connect()` を呼ぶな」** を意味する。[upstream のページ](../upstream-event-pipe/) で見た 5 種類の返り値のうちの 1 つがここで生まれる。`NGX_OK` (即座に接続完了) と `NGX_DONE` (既に接続済み) を分けているのは、後者では `connect()` 由来の初期化を全部飛ばす必要があるからだ。
+`NGX_DONE` が **「接続処理は完了している、`connect()` を呼ぶな」** を意味する。[upstream のページ](../upstream/) で見た 5 種類の返り値のうちの 1 つがここで生まれる。`NGX_OK` (即座に接続完了) と `NGX_DONE` (既に接続済み) を分けているのは、後者では `connect()` 由来の初期化を全部飛ばす必要があるからだ。
 
 `kp->conf->local` は `keepalive` を `proxy_bind` と組み合わせたときのためで、**送信元アドレスが違う接続を再利用してはいけない**。`tag` にモジュールの設定へのポインタを入れて識別している ([buf のページ](../buf-chain/) と同じタグの手法)。
 
@@ -372,7 +372,7 @@ found:
 
 `!u->request_body_sent` が入っているのが面白い。**リクエストボディを送り切っていない接続は再利用できない。** 上流が応答を返した後もクライアントからボディが届き続ける可能性があり、その残りを次のリクエストのデータとして送ってしまうと壊れる。
 
-`ngx_terminate || ngx_exiting` は [master/worker のページ](../master-worker/) の graceful shutdown で、**終了中のワーカーは接続をしまわない**。しまうと、その接続が生きている間ワーカーが終了できなくなる。
+`ngx_terminate || ngx_exiting` は [ワーカーの 1 周のページ](../state-machine/) の graceful shutdown で、**終了中のワーカーは接続をしまわない**。しまうと、その接続が生きている間ワーカーが終了できなくなる。
 
 しまう処理 ([`#L334-L379`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/modules/ngx_http_upstream_keepalive_module.c#L334-L379))。
 
@@ -462,11 +462,11 @@ close:
 
 `c->close` の判定が先頭にあるのは、`ngx_drain_connections()` や `ngx_close_idle_connections()` から呼ばれるため。**「コアが閉じてくれと言っている」と「上流が切ってきた」が、同じ handler に合流している。**
 
-書き側は `ngx_http_upstream_keepalive_dummy_handler` で、ログを出す以外何もしない。[ステートマシンのページ](../state-machine/) の `ngx_http_block_reading` と同じ、**「何もしない」を明示的な状態として持つ**形になっている。
+書き側は `ngx_http_upstream_keepalive_dummy_handler` で、ログを出す以外何もしない。[ワーカーの 1 周のページ](../state-machine/) の `ngx_http_block_reading` と同じ、**「何もしない」を明示的な状態として持つ**形になっている。
 
 ### アイドル接続からメモリを返す
 
-クライアント側の keepalive では、バッファを積極的に返す ([`src/http/ngx_http_request.c#L3403-L3453`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_request.c#L3403-L3453))。
+クライアント側の keepalive では、バッファを積極的に返す ([リクエストの終了のページ](../finalize-request/) の `ngx_http_set_keepalive`、[`src/http/ngx_http_request.c#L3403-L3453`](https://github.com/nginx/nginx/blob/release-1.31.4/src/http/ngx_http_request.c#L3403-L3453))。
 
 ```c title="src/http/ngx_http_request.c"
     /*
@@ -517,7 +517,7 @@ close:
     }
 ```
 
-`c->idle = 1` は [master/worker のページ](../master-worker/) の graceful shutdown で使われる印で、`ngx_close_idle_connections()` がこれを見る。`ngx_reusable_connection(c, 1)` は接続枯渇時の切り捨て対象にする印。**2 つの「切ってもいい」が別のフラグになっている**のは、条件が違うからだ。終了時は全部切るが、枯渇時は古い順に必要な数だけ切る。
+`c->idle = 1` は [ワーカーの 1 周のページ](../state-machine/) の graceful shutdown で使われる印で、`ngx_close_idle_connections()` がこれを見る。`ngx_reusable_connection(c, 1)` は接続枯渇時の切り捨て対象にする印。**2 つの「切ってもいい」が別のフラグになっている**のは、条件が違うからだ。終了時は全部切るが、枯渇時は古い順に必要な数だけ切る。
 
 ## なぜそうなっているか
 
@@ -547,7 +547,7 @@ Nginx は 1 ビットの世代番号を選んだ。**1 ビットで足りるの�
 
 `c->close = 1` を立てて handler を呼ぶと、**その接続の状態機械が、自分の文脈で片付ける**。handler は既に「今どの状態か」を表しているので、余計な情報が要らない。
 
-[ステートマシンのページ](../state-machine/) の「次にやることを関数ポインタで表す」が、そのまま「片付け方を関数ポインタで表す」になっている。
+[ワーカーの 1 周のページ](../state-machine/) の「次にやることを関数ポインタで表す」が、そのまま「片付け方を関数ポインタで表す」になっている。
 
 ### keepalive のキャッシュを線形探索にした理由
 
@@ -617,7 +617,8 @@ Nginx は 1 ビットの世代番号を選んだ。**1 ビットで足りるの�
 
 ## 関連
 
-- 接続を取ったときに `epoll` に登録する仕組みと `instance` の照合は [ステートマシンのページ](../state-machine/)。
-- `ngx_event_connect_peer()` が `NGX_DONE` を返す先の処理は [upstream と event_pipe のページ](../upstream-event-pipe/)。
-- `ngx_close_idle_connections()` を呼ぶ graceful shutdown は [master/worker のページ](../master-worker/)。
+- `ngx_get_connection()` で接続を取って `epoll` に登録するまでは [accept から接続までのページ](../accept-to-connection/)。
+- `instance` ビットの照合を実際にやっているのは [イベントメソッドのページ](../event-methods/)。
+- `ngx_event_connect_peer()` が `NGX_DONE` を返す先の処理は [upstream のページ](../upstream/)。
+- `ngx_close_idle_connections()` を呼ぶ graceful shutdown は [ワーカーの 1 周のページ](../state-machine/)。
 - `ngx_pfree` が `NGX_DECLINED` を返す理由は [メモリプールのページ](../memory-pool/)。

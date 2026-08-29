@@ -1,9 +1,9 @@
 ---
 title: "設定に書かれた `$変数` を、参照されたときに初めて評価してキャッシュする"
 description: "$remote_addr も $upstream_response_time も、値ではなく「値を計算する関数」として登録されている。設定を読む時点で名前を配列の添字に変換しておき、実行時はハッシュを引かずに配列を舐める。一度評価した値はリクエストに残り、途中で変わりうる変数だけが nocacheable の印で毎回捨てられる。"
-group: "拡張の仕組み"
+group: "設計の掘り下げ"
 sidebar:
-  order: 15
+  order: 43
 ---
 
 ## 何を学んだか
@@ -489,7 +489,7 @@ ngx_http_get_flushed_variable(ngx_http_request_t *r, ngx_uint_t index)
 
 ### グローバルな再帰カウンタ
 
-`ngx_http_variable_depth` は static なグローバル変数で、リクエストごとではない。1 スレッドで動くこと ([ステートマシンのページ](../state-machine/)) を前提に、リクエスト構造体を 1 フィールド節約している。
+`ngx_http_variable_depth` は static なグローバル変数で、リクエストごとではない。1 スレッドで動くこと ([ワーカーの 1 周のページ](../state-machine/)) を前提に、リクエスト構造体を 1 フィールド節約している。
 
 正しく動くが、**リクエストをまたいで漏れると壊れる**。だから成功パスと失敗パスの両方に `ngx_http_variable_depth++` が書かれている。片方を書き忘れると、そのワーカーは以後、深さ 99 からしか始められなくなる。ミスが即座には現れず、じわじわ効くタイプのバグになる。
 
@@ -532,3 +532,4 @@ ngx_http_get_flushed_variable(ngx_http_request_t *r, ngx_uint_t index)
 - 変数の値を確保しているプールは [メモリプールのページ](../memory-pool/)。値がコピーではなく参照であることは、寿命が揃っているから成立する。
 - `set_handler` で書き換えられる `$limit_rate` を読むのは [出力フィルタチェーンのページ](../output-filter-chain/)。
 - 「設定時にできることは設定時にやる」は [フェーズエンジンのページ](../phase-engine/) と同じ方針。
+- 設定に書かれた `$変数` をトークンとして読む側は [設定パースのページ](../conf-parse/)。
