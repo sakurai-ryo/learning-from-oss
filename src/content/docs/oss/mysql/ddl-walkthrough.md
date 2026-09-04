@@ -3,7 +3,7 @@ title: "ALTER TABLE — MDL 取得から commit_inplace_alter_table まで"
 description: "ALTER TABLE の実体は 3 つの経路 (INSTANT / INPLACE / COPY) の分岐と、その各経路で MDL がどう昇格・降格するかに尽きる。`sql/sql_alter.cc` は 449 行しかなく、判断はほぼ InnoDB の `check_if_supported_inplace_alter` 側にある。online な INPLACE でも排他 MDL の窓は 2 回開くこと、INSTANT でも最後に 1 回開くことを、`mysql_inplace_alter_table` の実際の呼び出し順で確認する。"
 group: "DDL"
 sidebar:
-  order: 78
+  order: 88
 ---
 
 > **前提**: [handler](./handler-walkthrough/) / [データディクショナリ](./data-dictionary/)

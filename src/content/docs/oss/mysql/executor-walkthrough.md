@@ -3,7 +3,7 @@ title: "iterator executor — AccessPath から Read() のループへ"
 description: "MySQL 8.4 の実行器は RowIterator という 2 つの純粋仮想関数だけの抽象でできている。Init() で位置を戻し、Read() が 0 / -1 / 1 を返す。CreateIteratorFromAccessPath が AccessPath の木を iterator の木に写し取り、ExecuteIteratorQuery が根の Read() をひたすら呼ぶ。この pull 型 (Volcano) の帰結として、LIMIT の早期終了が無料で手に入り、代わりに 1 行あたりの仮想関数呼び出しが木の深さぶん積み上がる。"
 group: "エグゼキュータ"
 sidebar:
-  order: 35
+  order: 36
 ---
 
 > **前提**: [AccessPath](./access-path-tree/)

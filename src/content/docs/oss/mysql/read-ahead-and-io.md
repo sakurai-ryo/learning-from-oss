@@ -3,7 +3,7 @@ title: "読み込みと I/O — read-ahead、AIO、O_DIRECT"
 description: "キャッシュミスしたページを 1 枚読むだけでは B+tree のスキャンは速くならない。InnoDB は 64 ページ単位の「領域」を持ち、その境界に来たときアクセス順が揃っているかを調べて、次の領域 64 ページをまとめて非同期で投げる。加えて 8.4 では innodb_flush_method の既定が「起動時に一時ファイルを O_DIRECT で開けるか試して決める」になっており、二重キャッシュの前提が 8.0 から変わっている。"
 group: "InnoDB — バッファプール"
 sidebar:
-  order: 56
+  order: 66
 ---
 
 > **前提**: [バッファプール](./buffer-pool-walkthrough/) / [LRU と midpoint 挿入](./lru-and-midpoint/)

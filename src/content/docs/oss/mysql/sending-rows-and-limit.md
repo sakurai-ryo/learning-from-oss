@@ -3,7 +3,7 @@ title: "行の返送 — LIMIT の早期終了、ストリーミング、SQL_BUF
 description: "実行ループは 1 行取れるたびにその場でパケットを組み立て、ソケットに書く。行が全部揃うのを待たない。だから LIMIT は LimitOffsetIterator が -1 を返すだけで実現でき、逆に、読むのが遅いクライアントは TCP 送信バッファを詰まらせてサーバスレッドを vio_write の中で止める。SQL_BUFFER_RESULT はその関係を一時表で断ち切るための古いスイッチで、net_write_timeout がその我慢の限界を決めている。"
 group: "エグゼキュータ"
 sidebar:
-  order: 40
+  order: 41
 ---
 
 > **前提**: [iterator executor](./executor-walkthrough/) / [テキストプロトコル](./text-protocol-and-resultset/)

@@ -3,7 +3,7 @@ title: "SHOW ENGINE INNODB STATUS — 各セクションがどの構造体を印
 description: "この文はテーブルを組み立てない。srv_monitor_file という一時ファイルに全文を fprintf し、読み戻して 1 個の文字列として返す。上限は 1MiB で、超えると TRANSACTIONS の先頭が削られ Innodb_truncated_status_writes が増える。9 つのセクションがそれぞれどの構造体を印字しているか、レートの分母がどこから来るか、SEMAPHORES の spin 数が 8.4 では 0 固定になっていることを確かめる。"
 group: "観測手段"
 sidebar:
-  order: 97
+  order: 107
 ---
 
 > **前提**: [InnoDB のスレッド一覧](./innodb-threads-walkthrough/) / [lock_sys](./lock-sys-sharding/)

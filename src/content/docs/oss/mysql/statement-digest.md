@@ -3,7 +3,7 @@ title: "ダイジェスト — 正規化したクエリの指紋"
 description: "`performance_schema.events_statements_summary_by_digest` の 1 行がどう作られるかを、レキサの `add_digest_token` から SHA-256、PFS のハッシュキーまで辿る。ダイジェストはパース後の木からではなくトークン列から作られ、リテラルは `?` に、`IN (1,2,3)` は `IN (...)` に潰される。`max_digest_length` を超えたクエリは黙って打ち切られて別のクエリと同じ指紋になり、キーにはスキーマ名が含まれ、識別子はクライアント文字セットの生バイトのまま入る。"
 group: "パーサとリゾルバ"
 sidebar:
-  order: 24
+  order: 25
 ---
 
 > **前提**: [パーサとリゾルバ](./parser-walkthrough/)

@@ -3,7 +3,7 @@ title: "アトミック DDL — DD トランザクションと innodb_ddl_log"
 description: "DD の更新は普通の InnoDB トランザクションなので redo と undo が効く。だがファイルの作成・削除・リネームはトランザクションにできない。その差を埋めるのが mysql.innodb_ddl_log で、8 種類のログレコードを「DDL トランザクションと同じ運命をたどるように」挿入することで、commit なら実行、rollback なら実行しない補償動作を表現する。半端な .ibd が残らない理由と、複数表 RENAME が原子的である理由。"
 group: "DDL"
 sidebar:
-  order: 83
+  order: 93
 ---
 
 > **前提**: [ALTER TABLE](./ddl-walkthrough/) / [データディクショナリ](./data-dictionary/)

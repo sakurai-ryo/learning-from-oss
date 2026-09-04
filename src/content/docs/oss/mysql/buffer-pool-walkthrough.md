@@ -3,7 +3,7 @@ title: "バッファプール — buf_page_get_gen が全読み書きの入口"
 description: "InnoDB でディスク上のページに触る道は 1 本しかない。buf_page_get_gen に (space_id, page_no) を渡すと、page hash を引き、なければ読み、LRU に載せ、要求された rw_lock を掛けて、mtr に登録した block を返す。この 1 関数の中に、インスタンス分割・chunk・page hash・page latch・read-ahead の起動点が全部詰まっている。ここで型の関係と latch の取得順を固定しておくと、LRU も page cleaner も read-ahead もこの関数の周辺の話として読める。"
 group: "InnoDB — バッファプール"
 sidebar:
-  order: 53
+  order: 63
 ---
 
 > **前提**: [ページとバッファ](./page-and-buffer/) / [物理構造](./innodb-physical-walkthrough/)

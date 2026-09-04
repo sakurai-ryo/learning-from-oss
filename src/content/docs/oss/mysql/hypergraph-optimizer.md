@@ -3,7 +3,7 @@ title: "hypergraph オプティマイザ — 何が変わるか"
 description: "8.4 の release ビルドでは有効化できない。optimizer_switch で on にすると ER_HYPERGRAPH_NOT_SUPPORTED_YET が返る。それでもツリーには 8273 行の join_optimizer.cc が入っていて、貪欲探索を DPhyp の動的計画法に、join 順序の制約を hyperedge に置き換えている。出力は旧オプティマイザと同じ AccessPath の木だ。何が違い、何が同じかを読む。"
 group: "オプティマイザ"
 sidebar:
-  order: 34
+  order: 35
 ---
 
 > **前提**: [AccessPath](./access-path-tree/) / [join 順序](./join-order-search/)

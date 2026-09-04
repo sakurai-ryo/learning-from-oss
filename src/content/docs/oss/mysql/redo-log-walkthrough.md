@@ -3,7 +3,7 @@ title: "redo ログ — mtr から #ib_redo ファイルまで"
 description: "mtr がコミットしてから 1 バイトがディスクに届くまでの経路を固定する。ログバッファへの書き込みは lock-free で、Link_buf という 2 本のリングだけが順序を回復させる。LSN と SN が別の数直線であること、512 バイトブロックの 12 バイトヘッダがいつ埋まるか、そして 8.0.30 以降は innodb_redo_log_capacity 1 つでファイル群が動的に管理されること。以降の耐久性のページはすべてこの経路の上に載る。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 67
+  order: 77
 ---
 
 > **前提**: [WAL](./wal-and-recovery-basics/) / [UPDATE の一生](./life-of-an-update/)

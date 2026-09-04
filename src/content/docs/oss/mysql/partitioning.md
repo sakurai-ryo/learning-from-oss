@@ -3,7 +3,7 @@ title: "パーティショニング — pruning と InnoDB 側の分割"
 description: "パーティショニングは 2 つの独立した仕掛けでできている。WHERE から不要なパーティションを落とす pruning は range オプティマイザの機構を流用していて、`JOIN::optimize` の早い段と、その前の prepare 段の 2 回走る。実行側は `Partition_helper` が `handler` をラップし、パーティションごとの `*_in_part` に振り分ける。InnoDB では 1 パーティションが 1 テーブルスペースなので、順序付きインデックス走査はパーティション数ぶんの並列カーソルと優先度付きキューになる。"
 group: "handler・データディクショナリ・パーティショニング"
 sidebar:
-  order: 45
+  order: 55
 ---
 
 > **前提**: [handler](./handler-walkthrough/) / [range 分析](./range-optimizer/)

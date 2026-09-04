@@ -3,7 +3,7 @@ title: "undo ログ — 巻き戻しと古い版の両方に使う"
 description: "InnoDB の undo は「ロールバック用の記録」と「他人が読む古い版の材料」を 1 つの構造で兼ねている。INSERT の undo は PK だけを書き、UPDATE の undo は変更された列の before image だけを書く。行の DB_ROLL_PTR が undo レコードを指し、その undo レコードがさらに前の DB_ROLL_PTR を持つことで版鎖になる。コミット時に insert undo は捨てられ、update undo だけが history list に積まれて purge を待つ。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 58
+  order: 68
 ---
 
 > **前提**: [トランザクション](./transaction-walkthrough/) / [レコードの構造](./record-format/)

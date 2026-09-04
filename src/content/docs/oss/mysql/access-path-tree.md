@@ -3,7 +3,7 @@ title: "AccessPath — 最適化の出力は実行の入力"
 description: "オプティマイザは実行コードを吐かない。46 種類のノードからなる AccessPath の木という 1 つのデータ構造を吐く。旧オプティマイザも hypergraph も同じ木を出し、エグゼキュータはその木からしか iterator を組まない。この分離が EXPLAIN FORMAT=TREE を可能にし、2 つのオプティマイザの共存を可能にしている。この章で最も重要な合流点。"
 group: "オプティマイザ"
 sidebar:
-  order: 33
+  order: 34
 ---
 
 > **前提**: [JOIN::optimize](./optimizer-walkthrough/) / [アクセスパスの選択](./access-path-selection/)

@@ -3,7 +3,7 @@ title: "mini-transaction — ページ変更と redo レコードの原子単位
 description: "InnoDB のトランザクションはページの整合性を守らない。守るのは mtr のほうだ。mtr は「複数ページへの変更をまとめて 1 単位にし、redo に全部載るか 1 つも載らないかにする」ための仕組みで、コミットの瞬間に redo バッファへのコピー・dirty page の flush list 登録・latch の解放が一気に起きる。dirty page の oldest_modification がこのとき何になるかが、チェックポイントの正しさをそのまま決めている。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 68
+  order: 78
 ---
 
 > **前提**: [redo ログ](./redo-log-walkthrough/) / [ページの構造](./page-layout/)

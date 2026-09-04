@@ -3,7 +3,7 @@ title: "内部一時表 — TempTable エンジンとディスク溢れ"
 description: "GROUP BY や derived table のために MySQL が裏で作るテーブルは、既定で TempTable エンジンに載る。上限が 3 つ (tmp_table_size はテーブル単位・セッション変数、temptable_max_ram はグローバル、temptable_max_mmap は既定 0) あり、どれに当たっても同じ RECORD_FILE_FULL になる。そこから InnoDB のディスク一時表へ落ちる経路が 2 本あることと、Created_tmp_disk_tables が増える場所、The table is full が出る場所を読む。"
 group: "エグゼキュータ"
 sidebar:
-  order: 37
+  order: 38
 ---
 
 > **前提**: [iterator executor](./executor-walkthrough/) / [ページとバッファ](./page-and-buffer/)

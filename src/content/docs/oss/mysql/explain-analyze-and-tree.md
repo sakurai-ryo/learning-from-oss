@@ -3,7 +3,7 @@ title: "EXPLAIN ANALYZE / FORMAT=TREE / optimizer trace"
 description: "FORMAT=TREE も EXPLAIN ANALYZE も、AccessPath の木から Json_object を組み立てて文字列に落とすだけの同じ経路を通る。違いは実測値を JSON に足すかどうかだけだ。実測値を集めるのは TimingIterator で、Read() のたびに時計を 2 回読む。actual rows がループごとの平均であること、(never executed) が出る条件、optimizer_trace が上限を超えたら破棄ではなく切り詰められることを、コードから確かめる。"
 group: "観測手段"
 sidebar:
-  order: 94
+  order: 104
 ---
 
 > **前提**: [AccessPath](./access-path-tree/) / [EXPLAIN の列](./explain-columns/)

@@ -3,7 +3,7 @@ title: "range 分析 — WHERE を区間に変える"
 description: "WHERE 句を、インデックスごとの「読むべき区間の集合」に翻訳するのが range 分析だ。SEL_ARG のグラフという独特なデータ構造でそれを表し、区間から 6 種類のアクセスパスの候補を作ってコストで選ぶ。LIKE 'abc%' が range になり LIKE '%abc' がならない理由は、実は「区間が作れない」ではなく「インデックス全体を覆う区間ができてしまう」ことにある。"
 group: "オプティマイザ"
 sidebar:
-  order: 27
+  order: 28
 ---
 
 > **前提**: [JOIN::optimize](./optimizer-walkthrough/) / [統計とコストモデル](./statistics-and-cost-model/)

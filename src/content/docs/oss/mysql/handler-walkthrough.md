@@ -3,7 +3,7 @@ title: "handler — SQL 層が InnoDB を呼ぶ唯一の口"
 description: "エグゼキュータが InnoDB に触れる方法は `handler` のメソッド呼び出ししかない。その `handler` は wrapper (`ha_write_row` などの非 virtual メソッド) と virtual な実装の二重構造になっていて、行ロギング・PFS 計装・状態遷移のアサーションは全部 wrapper 側にある。pure virtual は 12 個だけで、残りは既定実装が `HA_ERR_WRONG_COMMAND` を返す。InnoDB 側では `row_prebuilt_t` が `ha_innobase` と InnoDB 本体をつなぐ状態の置き場になっている。1 回のテーブルスキャンで実際に呼ばれるメソッドの順序まで固定する。"
 group: "handler・データディクショナリ・パーティショニング"
 sidebar:
-  order: 41
+  order: 51
 ---
 
 > **前提**: [pluggable storage engine](./pluggable-storage-engine/) / [iterator executor](./executor-walkthrough/)

@@ -3,7 +3,7 @@ title: "サブクエリ — semijoin 化、materialize、derived の merge"
 description: "IN (subquery) は書き換えられる。semijoin として join に平坦化されるか、EXISTS に変換されるか、マテリアライズされるか、派生表にされるか。どれになるかは解決フェーズと最適化フェーズの 2 段で決まり、平坦化されればさらに 5 つの実行戦略からコストで選ぶ。IN と EXISTS と JOIN の使い分けが「実は同じものに落ちる」ところと「落ちない」ところを、変換の条件から読む。"
 group: "オプティマイザ"
 sidebar:
-  order: 30
+  order: 31
 ---
 
 > **前提**: [JOIN::optimize](./optimizer-walkthrough/) / [join 順序](./join-order-search/)

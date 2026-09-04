@@ -3,7 +3,7 @@ title: "binlog — キャッシュ → ordered_commit → ファイル"
 description: "binlog はトランザクションの実行中に直接ファイルへ書かれない。セッションごとの 2 本のキャッシュ (statement / transaction) に溜まり、COMMIT のときにグループコミットの flush ステージでまとめてファイルへコピーされる。この経路を binlog_cache_data から MYSQL_BIN_LOG::ordered_commit、そして LOCK_log / LOCK_sync / LOCK_commit の 3 本の mutex を通ってファイルに届くまで固定する。GTID の採番と MTA 用の論理時刻がどこで決まるか、dump thread がどこを読むかもここで決まる。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 84
+  order: 94
 ---
 
 > **前提**: [UPDATE の一生](./life-of-an-update/) / [トランザクションの調停](./transaction-coordination/)

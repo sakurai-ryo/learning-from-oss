@@ -3,7 +3,7 @@ title: "join 順序 — greedy search と枝刈り"
 description: "n 個のテーブルの join 順序は n! 通りある。MySQL は「深さ search_depth まで全探索し、最良の先頭 1 個を確定してまた探す」という貪欲法でこれを潰す。既定の探索深さ 62 と枝刈りレベル 1 が何を意味するか、outer join の括弧が順序をどう制約するか、eq_ref だけの特別扱いがなぜあるかを読む。STRAIGHT_JOIN が効くのはこの層である。"
 group: "オプティマイザ"
 sidebar:
-  order: 29
+  order: 30
 ---
 
 > **前提**: [アクセスパスの選択](./access-path-selection/) / [統計とコストモデル](./statistics-and-cost-model/)

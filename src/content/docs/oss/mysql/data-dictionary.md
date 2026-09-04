@@ -3,7 +3,7 @@ title: "データディクショナリ — mysql.ibd とトランザクショナ
 description: "8.0 でメタデータの保管場所が `.frm` ファイルから InnoDB のテーブル 30 本に移った。すべて `mysql.ibd` という 1 つのテーブルスペースに入っていて、DDL は普通の InnoDB トランザクションとしてそこを書き換える。読み出し側には `Dictionary_client` の committed / uncommitted の二重レジストリと、`TABLE_SHARE` を保持する `table_def_cache` の LRU がある。`INFORMATION_SCHEMA` のテーブルは、bootstrap 時に `CREATE VIEW` を実行して作られる DD 上の SQL ビューになった。"
 group: "handler・データディクショナリ・パーティショニング"
 sidebar:
-  order: 43
+  order: 53
 ---
 
 > **前提**: [handler](./handler-walkthrough/)

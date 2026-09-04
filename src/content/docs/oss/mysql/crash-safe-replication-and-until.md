@@ -3,7 +3,7 @@ title: "クラッシュセーフとフィルタ — relay_log_info をテーブ�
 description: "レプリカの位置情報を mysql.slave_relay_log_info という InnoDB テーブルに置くと、位置の更新が適用データと同じトランザクションに入る。これがクラッシュセーフの正体で、pre_commit / post_commit という 2 段のフックで実装されている。フィルタが適用のどの段で効くか、START REPLICA UNTIL の 4 種類がどこで判定されるか、そして SLAVE / MASTER というトークンが 8.4 のどこに残っているかを確かめる。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 92
+  order: 102
 ---
 
 > **前提**: [applier と並列適用](./applier-and-mta/) / [GTID](./gtid/)

@@ -3,7 +3,7 @@ title: "join の実行 — nested loop、hash join、BKA"
 description: "8.4 の実行器が持つ join は nested loop と hash join と BKA の 3 つで、BNL (block nested loop) という実装はもう存在しない。EXPLAIN の Using join buffer (hash join) が出る条件を setup_join_buffering まで遡り、hash join がメモリに入り切らないときに最大 128 個 (kMaxChunks) のチャンクファイルへ分割する仕組みと、そこで順序が失われることを読む。BKA は optimizer_switch の batched_key_access が既定 off なので、通常は経路に現れない。"
 group: "エグゼキュータ"
 sidebar:
-  order: 36
+  order: 37
 ---
 
 > **前提**: [iterator executor](./executor-walkthrough/) / [join 順序](./join-order-search/)

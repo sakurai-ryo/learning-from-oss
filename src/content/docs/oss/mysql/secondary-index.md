@@ -3,7 +3,7 @@ title: "セカンダリインデックス — 葉には PK が入っている"
 description: "セカンダリインデックスの葉レコードは「インデックス列 + PK」でできている。dict_index_build_internal_non_clust がそれを組み立てる様子と、既にインデックスに含まれる PK 列は重複させないこと、UNIQUE インデックスだけ扱いが違うことを読む。SELECT * が二度引く判定は need_to_access_clustered 1 つで、covering index も index extension もその真偽をひっくり返すための話に還元できる。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 50
+  order: 60
 ---
 
 > **前提**: [クラスタードインデックス](./clustered-index/)

@@ -3,7 +3,7 @@ title: "トランザクションの調停 — trans_begin から ha_commit_trans
 description: "MySQL のトランザクションは 2 層ある。文が終わるたびに閉じる statement transaction と、COMMIT で閉じる normal transaction だ。`BEGIN` はエンジンに何も伝えず、エンジン側が最初に触ったときに `trans_register_ha` で参加者として名乗り出る。この 2 層と遅延登録を押さえると、autocommit の挙動も、DDL の暗黙コミットも、`rw_ha_count` が何を数えているのかも同じ絵の中に収まる。"
 group: "handler・データディクショナリ・パーティショニング"
 sidebar:
-  order: 44
+  order: 54
 ---
 
 > **前提**: [handler](./handler-walkthrough/) / [UPDATE の一生](./life-of-an-update/)

@@ -3,7 +3,7 @@ title: "ORDER BY / GROUP BY — インデックスで並びを得られるか"
 description: "ソートを省けるのは、インデックスの並びがそのまま ORDER BY の並びになるときだけだ。その判定を行う test_if_order_by_key は、キーパートを左から順に消費できるかを見る。LIMIT が付くと話が変わり、test_if_cheaper_ordering が「LIMIT 件を取るまでに読む行数」を推定してインデックスを乗り換える。ページネーションが突然遅くなる現象の出どころはこの推定式にある。"
 group: "オプティマイザ"
 sidebar:
-  order: 31
+  order: 32
 ---
 
 > **前提**: [アクセスパスの選択](./access-path-selection/) / [JOIN::optimize](./optimizer-walkthrough/)

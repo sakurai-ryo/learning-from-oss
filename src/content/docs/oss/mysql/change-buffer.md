@@ -3,7 +3,7 @@ title: "change buffer — 8.4 で既定 OFF になった機構"
 description: "セカンダリインデックスの葉ページがバッファプールに無いとき、読まずに変更だけを別の B+tree に溜めておく仕組みが change buffer だ。8.4 の innodb_change_buffering の既定値は IBUF_USE_NONE、つまり OFF になっている。コード上に deprecated マークは無く、ibuf0ibuf.cc は 4500 行そのまま残っている。なぜ SSD 時代に「効かないが複雑さだけ残る」機構になったのか、ibuf bitmap ページとクラッシュリカバリの相互作用を読んで確かめる。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 75
+  order: 85
 ---
 
 > **前提**: [セカンダリインデックス](./secondary-index/) / [バッファプール](./buffer-pool-walkthrough/)

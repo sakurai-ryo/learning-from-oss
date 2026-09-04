@@ -3,7 +3,7 @@ title: "集約・ウィンドウ・集合演算"
 description: "GROUP BY の実行には 2 つの形がある。入力が既に並んでいれば AggregateIterator がストリーミングで畳み込み、並んでいなければ TemptableAggregateIterator が一時表の上で更新を繰り返す。前者はグループ境界を「次のグループの 1 行目を見た瞬間」に検出するので、直前の行を退避して復元するという奇妙な処理が要る。ウィンドウ関数のフレームバッファも UNION DISTINCT の重複排除も同じ内部一時表に乗っているので、tmp_table_size の影響がここまで及ぶ。"
 group: "エグゼキュータ"
 sidebar:
-  order: 39
+  order: 40
 ---
 
 > **前提**: [iterator executor](./executor-walkthrough/) / [内部一時表](./materialization-and-temptable/)

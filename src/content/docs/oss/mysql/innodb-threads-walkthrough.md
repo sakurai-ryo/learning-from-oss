@@ -3,7 +3,7 @@ title: "InnoDB のスレッド一覧 — 誰が何をいつ動かすか"
 description: "InnoDB が起動する背景スレッドを 1 枚の表に落とし、PFS の instrument 名・OS スレッド名・生成場所・起きるきっかけ・関係する設定変数を並べる。生成は os_thread_create という 1 個のマクロに集約されているが、呼び出し側は srv0start.cc・buf0flu.cc・log0log.cc・os0file.cc・fts0opt.cc・clone0repl.cc に散っている。master thread が active と idle で別の仕事をすること、innodb_fatal_semaphore_wait_threshold がその半分の時間で別のコードを自主的に降参させることまで押さえる。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 73
+  order: 83
 ---
 
 > **前提**: [プロセスとスレッド](./thread-model/)

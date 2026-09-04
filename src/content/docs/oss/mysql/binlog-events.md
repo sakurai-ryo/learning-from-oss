@@ -3,7 +3,7 @@ title: "binlog イベント — 19 バイトヘッダ、Table_map と Rows、FDE
 description: "binlog ファイルは 4 バイトのマジックのあと、19 バイト固定ヘッダを持つイベントが並ぶだけの構造をしている。前方互換の実体はファイル先頭の Format_description_event が持つ post_header_len[] という 1 バイト × イベント種別数の配列で、これがあるから知らないイベントを読み飛ばせる。行イベントは Table_map で列の型を受け取ってから Rows で値を読む 2 段構えになっていて、binlog_row_image と binlog_row_metadata の設定が Debezium のような CDC ツールから見える情報を直接変える。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 85
+  order: 95
 ---
 
 > **前提**: [binlog](./binlog-walkthrough/)

@@ -35,16 +35,16 @@ InnoDB の説明は REPEATABLE READ (InnoDB 既定) を基準に書き、READ CO
 
 - Group Replication (`plugin/group_replication/`)、InnoDB Cluster、MySQL Router (`router/`)
 - コンポーネント基盤 (`components/`)、プラグイン API 一般 (X Plugin と semisync は個別に読む)
-- ストアドプロシージャ / 関数 / トリガ / イベントスケジューラ
-- 権限・認証の ACL (`sql/auth/` は握手部分だけ読む)、文字セット・照合順序 (群 4 の照合集約で触れるだけ)
+- イベントスケジューラ、ストアドプログラムの実行エンジンの内部 (`sp_head` / `sp_instr` の命令セット。群 6.5 では文脈の凍結とキャッシュだけ扱う)
+- 権限・認証の ACL (`sql/auth/` は握手部分だけ読む。ビューとストアドプログラムの DEFINER は群 6.5 で扱う)
 - 全文検索 (`storage/innobase/fts/`)、空間インデックス (`gis/`、`lock0prdt.cc`)、ページ圧縮・暗号化・keyring、クローンプラグイン
 - X DevAPI のドキュメントストア (コレクション、`mysqlx_*` の CRUD は SQL への変換までで止める)
 - MyISAM・MEMORY・NDB などの他エンジン (TempTable は内部一時表として読む)、Enterprise thread pool
-- JSON 型・生成列・CTE・ウィンドウ関数の機能単位ページ (エグゼキュータのページで触れるだけ)
+- CTE・ウィンドウ関数の機能単位ページ (エグゼキュータのページで触れるだけ)
 - hypergraph オプティマイザの内部 (対比 1 ページのみ。8.4 では release ビルドで有効化できない)
 - 旧 `libbinlogevents/` (8.4.11 では `libs/mysql/binlog/event/` への転送スタブ)
 
-## 構成 (概要 + 102 ページ / 16 群)
+## 構成 (概要 + 114 ページ / 17 群)
 
 確認時の表では「パーティショニング」を 1 ページの独立群にしていたが、1 ページだけの sidebar 群を避けて群 7 に置いた。
 
@@ -123,6 +123,30 @@ classic 6 ページ + X Protocol 3 ページ。クライアント側は同 repo 
 | 38    | L   | `filesort`                       | filesort — ソートバッファとマージ                              | `sql/filesort.cc` `filesort()` (L367) / `read_all_rows` (L923) / `write_keys` (L1088) / `save_index` (L1589)、`sql/merge_many_buff.h` (header-only)、`sql/sql_sort.h` `MERGEBUFF=7` / `MERGEBUFF2=15`、`Filesort_buffer` (L189)、`sorting_iterator.cc`、`sort_buffer_size`、packed addon fields、`max_length_for_sort_data` は deprecated で無効、`SortFileIterator` / `SortBufferIndirectIterator` (rowid sort vs addon)。どう活かす: `Sort_merge_passes`                                                                 |
 | 39    | L   | `aggregation-window-and-set-ops` | 集約・ウィンドウ・集合演算                                     | `AggregateIterator`、`TemptableAggregateIterator`、`window_iterators.h` (`WindowIterator` L94 / `BufferingWindowIterator` L204)、`sql_union.cc` `Query_expression::optimize` (L1004) / `create_access_paths` (L1436)、`AppendIterator`、`hash_set_operations`、`RemoveDuplicatesIterator`                                                                                                                                                                                                                                  |
 | 40    | L   | `sending-rows-and-limit`         | 行の返送 — LIMIT の早期終了、ストリーミング、SQL_BUFFER_RESULT | `LimitOffsetIterator` (L109)、`sql/query_result.cc` `Query_result_send::send_data` (L97) → `sql_class.cc` `THD::send_result_set_row` (L2914)、`OPTION_BUFFER_RESULT` (`query_options.h` L72、`sql_executor.cc` L275)、`sql_select_limit`、`net_write_timeout`。どう活かす: 遅いクライアントがサーバスレッドを送信で止める (mysql2 の stream と backpressure)                                                                                                                                                               |
+
+### 群 6.5: 型・文字セット・スキーマオブジェクト (order 42-50)
+
+**2026-09-04 追加。** 縦の道 (1 本の SQL を追う) では `SELECT id FROM t WHERE id = 1` しか通らないので、型変換・照合順序・スキーマオブジェクトに一度も当たらない。アプリケーションエンジニアがスキーマ設計で迷うのはそちらなので、横向きの群を 1 つ挟んだ。値の表現が SQL 層の話、スキーマオブジェクトが DD の話なので、エグゼキュータと handler の間に置く。
+
+この追加で **order 21 以降を採番し直した**。旧 21-40 は +1 (群 3 の末尾に `connection-pool-and-session-state` を order 21 で追加)、旧 41 以降は +10。以下の群 7〜16 の見出しにある order 範囲は旧番号のままなので、実ファイルの `sidebar.order` を正とする。
+
+| order | 形  | slug                                       | タイトル                                            | 中身 / 主な参照                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----- | --- | ------------------------------------------ | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 42    | L   | `field-and-types`                          | 型と Field クラス — 値がバイト列になるまで          | `sql/field.h` 階層コメント (L125)、`Field::ptr` (L639)、3 本の `store` (L922)、`type_conversion_status` (L202)、`enum_check_fields` (L172)、`pack_length` (L1063)、`char_length` (L1677)、`field.cc` `Field_num::check_int` (L1545) / `Field::check_constraints` (L1716) / `report_if_important_data` (L6127)、`sql_base.cc` `fill_record` (L9696)、`mysys/decimal.cc` `decimal_bin_size_inline` (L1617)、`handler.h` `HA_MAX_REC_LENGTH` (L625)、`sql_table.cc` L8598                                                                        |
+| 43    | L   | `charset-and-collation`                    | 文字セットと照合順序 — 比較は weight 列の比較になる | `include/mysql/strings/m_ctype.h` `CHARSET_INFO` (L423) / `MY_COLLATION_HANDLER` (L247) / PAD の定義 (L254) / `strnxfrm` の契約 (L265)、`strings/ctype-uca.cc` `my_charset_utf8mb4_0900_ai_ci` (L9610、番号 255 / NO_PAD)、`strings/ctype-utf8.cc` `my_charset_utf8mb4_general_ci` (L7786、番号 45 / PAD_SPACE)、`filesort.cc` `make_sortkey` の `strnxfrm` (L1284) / `sortlength` (L2099) / `max_sort_length` は非 varlen のみ (L2166)、`rem0cmp.cc` `innobase_mysql_cmp` (L76)                                                              |
+| 44    | L   | `sql-mode-and-strict`                      | sql_mode と厳格モード — 警告がエラーに変わる場所    | `error_handler.h` `Strict_error_handler` (L269)、`error_handler.cc` `handle_condition` (L155) / 昇格対象 22 コード (L195) / `Ignore_error_handler` (L73、14 コード)、`sql_select.cc` `Sql_cmd_dml::prepare` (L490) / `execute` (L676) の push、`item.cc` `save_in_field_no_warnings` (L1812)、`sys_vars.cc` `Sys_sql_mode` (L4797) / `expand_sql_mode` (L4674) / `check_sub_modes_of_strict_mode` (L4652)、`sql_class.h` `is_strict_mode` (L3161)                                                                                             |
+| 45    | L   | `datetime-and-timezone`                    | 日付時刻とタイムゾーン — TIMESTAMP だけが変換される | `field.cc` `Field_timestampf::store_internal` (L5235) / `Field_datetimef::store_internal` (L6023)、`tztime.h` `Time_zone` (L49、4 実装)、`tztime.cc` `Time_zone_system` (L646) / `_utc` (L748) / `_db` (L840) / `_offset` (L928) / `gmt_sec_to_TIME` の localtime_r 依存コメント (L709) / `my_tz_find` (L1805)、`include/my_time.h` `TYPE_TIMESTAMP_MAX_VALUE` (L89)、`include/my_time_t.h` (L32)、`sys_vars.cc` `explicit_defaults_for_timestamp` 既定 true (L1671)                                                                          |
+| 46    | L   | `foreign-keys`                             | 外部キー — 子を書くと親に共有ロックが載る           | `row0ins.cc` `row_ins_check_foreign_constraint` (L1415、`skip_gap_lock` は RC 判定) / supremum の next-key (L1615) / 削除マーク時 (L1626) / 一致時 `LOCK_REC_NOT_GAP` (L1648) / 不一致時 `LOCK_GAP` (L1708) / `row_ins_foreign_check_on_constraint` (L1010、循環 UPDATE 拒否)、`dict0mem.h` `FK_MAX_CASCADE_DEL = 15` (L318) / `DICT_FK_MAX_RECURSIVE_LOAD = 20` (L310) / `dict_foreign_t` (L1666)、`sql_table.cc` `prepare_foreign_key` (L6759、子の索引を自動生成)、`sys_vars.cc` `foreign_key_checks` は IN_BINLOG (L5370)                 |
+| 47    | L   | `generated-columns-and-functional-indexes` | 生成カラムと関数インデックス                        | `field.h` `Value_generator` (L483、`base_columns_map`) / `is_gcol` (L825) / `is_field_for_functional_index` (L877)、`sql_table.cc` `make_functional_index_column_name` (L7929、`!hidden!<idx>!<part>!<n>`) / 隠し列生成 (L8102) / LOB 禁止 (L8090)、`error_handler.cc` `Functional_index_error_handler` (L230)、`handler.cc` `ha_rnd_next` の再計算 (L2996)、`table.cc` `update_generated_read_fields` (L7287、カバリングなら省略)、`row0ins.cc` `innobase_get_computed_value` (L958)、`sql_base.cc` `invoke_table_check_constraints` (L9842) |
+| 48    | L   | `json-storage-and-partial-update`          | JSON — バイナリ表現と部分更新                       | `sql-common/json_binary.h` 形式定義 (L60-140)、`json_binary.cc` 型定数 (L62)、`json_dom.h` `Json_key_comparator` (L339、長さ順→辞書順)、`json_dom.cc` `Json_wrapper::attempt_binary_update` (L3406)、`item_json_func.cc` `supports_partial_update` (L2139)、`sql_update.cc` 採否と `reject_column` (L1394)、`table.cc` `is_binary_diff_enabled` (L7916)、`sys_vars.cc` `binlog_row_value_options` (L6895、既定 0)                                                                                                                             |
+| 49    | L   | `views-and-view-security`                  | ビュー — マージされるか、実体化されるか             | `table.h` 種別コメント (L2847)、`VIEW_ALGORITHM_*` (L2547)、`VIEW_CHECK_LOCAL/CASCADED` (L2557)、`is_merged` (L3200)、`view_suid` / `with_check` (L3804)、`table.cc` `find_view_security_context` (L4992) / `prepare_security` (L5023) / `view_check_option` (L4812)、マージ判定は群 5 の `merge_derived` / `is_mergeable` と共通、`ER_VIEW_MERGE_UNSUPPORTED` 相当の警告文言は `messages_to_clients.txt` L5369                                                                                                                               |
+| 50    | L   | `triggers-and-stored-programs`             | トリガとストアドプログラム — 文の外側で動くコード   | `sql_base.cc` `DML_prelocking_strategy::handle_table` (L6281)、`table_trigger_dispatcher.cc` `process_triggers` (L517)、`sql_base.cc` `fill_record_n_invoke_before_triggers` (L9977)、`trigger.cc` パース時の sql_mode / 文字セット凍結 (L488)、`trigger.h` `m_sql_mode` (L286)、`sp_instr.cc` の `ENABLE_SET_SELECT_STRICT_ERROR_HANDLER` (L1138)、`sp_cache.h` 接続ごとのキャッシュ (L33)、`sql_class.h` `sp_proc_cache` (L2838)、`sys_vars.cc` `stored_program_cache` (L6341) / `max_sp_recursion_depth` 既定 0 (L2965)                    |
+
+群 3 への追加分。
+
+| order | 形  | slug                                | タイトル                           | 中身 / 主な参照                                                                                                                                                                                                                                                                                                                                                                                |
+| ----- | --- | ----------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 21    | L   | `connection-pool-and-session-state` | コネクションプールとセッション状態 | `sql_class.cc` `THD::cleanup_connection` (L1193、debug アサーションが残留物を列挙) / `THD::init` (L1089)、`sql_plugin.cc` `plugin_thdvar_init` の `thd->variables = global_system_variables` (L3008)、`sql_parse.cc` `COM_RESET_CONNECTION` (L1906) / `COM_CHANGE_USER` (L1952)、`sys_vars.cc` `session_track_system_variables` 既定 5 変数 (L6635) / `session_track_transaction_info` (L6662) |
 
 ### 群 7: handler・データディクショナリ・パーティショニング (order 41-45)
 
@@ -479,3 +503,18 @@ classic 6 ページ + X Protocol 3 ページ。クライアント側は同 repo 
 - `mysql.gtid_executed` は binlog 有効時**ローテート時にしか書かれない**。`gtid_executed_compression_period` の既定は 8.0.23 以降 0 (無効)
 - semisync の AFTER_SYNC は `binlog_order_commits=ON` のとき `LOCK_commit` を保持したまま待つ。**OFF のときは `LOCK_sync` を先に unlock してから呼ぶのでステージ mutex を持たない**
 - レプリケーションフィルタの参照点はすべて**適用段**。relay log には全イベントが残るので、フィルタはネットワークもディスクも節約しない。`sequence_number` に穴も空かない
+
+### 群 6.5 の執筆で分かったこと (2026-09-04)
+
+- **厳格モードは `Field` の中では判定されない。** `Field::set_warning` も `Field::store` も `SL_WARNING` で積むだけで、`SL_ERROR` への昇格は `Strict_error_handler::handle_condition` が `level` ポインタを書き換えて行う。`push_warning` には `assert(severity != SL_ERROR)` があるので、警告として積む以外の道がない
+- **`STRICT_TRANS_TABLES` と `STRICT_ALL_TABLES` の差は 1 つの述語だけ。** `!cannot_safely_rollback(STMT) || (sql_mode & MODE_STRICT_ALL_TABLES)`。InnoDB しか使っていなければ両者に差はない
+- **`max_sort_length` は PAD SPACE の照合順序にしか効かない。** `sortlength` の `min` は `!sortorder->is_varlen` の枝の中にあり、NO PAD (8.0 既定の `utf8mb4_0900_ai_ci`) では `is_varlen` が立つので通らない
+- **JSON のキー順は辞書順ではない。** `Json_key_comparator` は長さを先に比較し、同じ長さのときだけ辞書順にする (探索を速くするため)
+- **外部キー検査は自前で RC を判定する。** `row_ins_check_foreign_constraint` の `skip_gap_lock = (trx->isolation_level <= TRX_ISO_READ_COMMITTED) || table->skip_gap_locks()`。群 10 で挙げた `trx0trx.h` の 4 述語とは別経路
+- **一致した親行に取るのは `LOCK_S` + `LOCK_REC_NOT_GAP`。** RR でもギャップを取らない。ギャップを取るのは (1) 親が見つからなかったとき (2) 削除マーク付きの親に当たったとき (3) supremum に達したとき、の 3 つ
+- **子側の索引を自動生成するのは SQL 層。** `dict_foreign_t` のコメントは `InnoDB does not generate new indexes implicitly` と書いているが、`prepare_foreign_key` に `we always add generated supporting key` とある
+- **`foreign_key_checks` は `IN_BINLOG`。** 値がレプリカに伝わるので、検査を切って流した変更はレプリカでも検査されない
+- **関数インデックスの隠し列名は `!hidden!<インデックス名>!<キーパート番号>!<連番>`。** 名前が長いとインデックス名の側だけが切り詰められる (連番を削ると衝突回避のループが終わらないため)
+- **トリガは作成時の `sql_mode` と文字セット 3 種を凍結する。** `Trigger_creation_ctx` が `character_set_client` / `collation_connection` / データベースの照合順序を持ち、パース時に差し替えて戻す。パース中は `m_digest` と `m_statement_psi` が `nullptr` にされるので、トリガ内の文は独立したダイジェストにならない
+- **`COM_RESET_CONNECTION` はセッション変数をグローバル値で丸ごと上書きする。** `THD::init` → `plugin_thdvar_init` の `thd->variables = global_system_variables`。1 変数ずつ既定に戻すのではないので、接続確立時に `SET` した値も消える
+- **`THD::cleanup_connection` の `#ifndef NDEBUG` ブロックが、セッションの残留物の完全な一覧になっている** (分離レベル / autocommit / prepared_stmt_count / 診断エリア / 一時テーブル / `LOCK TABLES`)

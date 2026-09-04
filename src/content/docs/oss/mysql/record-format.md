@@ -3,7 +3,7 @@ title: "レコードの構造 — 5 バイトヘッダ、NULL ビットマップ
 description: "InnoDB の 1 行が実際に何バイトになるかを、origin という基準点から前後に伸びるバイト列として読む。5 バイトのヘッダに詰め込まれた info bits・n_owned・heap_no・status・next、逆順に並ぶ可変長列の長さ、NULL ビットマップ。COMPACT と DYNAMIC の違いが DICT_TF_HAS_ATOMIC_BLOBS 1 ビットの派生でしかないことと、Row size too large (> 8126) がどの計算から出るかを確定させる。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 48
+  order: 58
 ---
 
 > **前提**: [ページの構造](./page-layout/)

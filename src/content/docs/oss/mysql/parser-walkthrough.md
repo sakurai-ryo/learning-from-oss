@@ -3,7 +3,7 @@ title: "パーサとリゾルバ — 文字列から Query_block まで"
 description: "COM_QUERY のバイト列が Query_block と Item の木になるまでを、dispatch_sql_command から Query_block::prepare まで一本の線で辿る。レキサが 3 本のバッファを同時に進めながらダイジェストも作ること、Bison が作るのは PT_* の木でしかないこと、Query_block ができるのは contextualize の中であること、名前解決はさらにその後で open_tables_for_query が TABLE を繋いだ後にしか動けないこと。この 4 段の境界が、後のオプティマイザのページが前提にする配線になる。"
 group: "パーサとリゾルバ"
 sidebar:
-  order: 21
+  order: 22
 ---
 
 > **前提**: [SELECT の一生](./life-of-a-select/)

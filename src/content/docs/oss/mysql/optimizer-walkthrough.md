@@ -3,7 +3,7 @@ title: "JOIN::optimize — 段階の順番"
 description: "解決済みの Query_block を受け取ってから AccessPath の木を出すまでに、JOIN::optimize は 10 を超える段を決まった順で通る。等価伝播、パーティション pruning、集約の畳み込み、統計の見積り、join 順序の探索、ソート回避、一時表の設計、そして最後に AccessPath 生成とエンジンへの押し込み。この順番が固定されているせいで「なぜこの最適化は効かないのか」の答えが決まる。EXPLAIN も同じ経路を通る。"
 group: "オプティマイザ"
 sidebar:
-  order: 25
+  order: 26
 ---
 
 > **前提**: [パーサとリゾルバ](./parser-walkthrough/) / [名前解決と Item ツリー](./name-resolution-and-items/)

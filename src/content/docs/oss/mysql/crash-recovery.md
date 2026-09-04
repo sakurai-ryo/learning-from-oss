@@ -3,7 +3,7 @@ title: "クラッシュリカバリ — redo を当てて undo で巻き戻す"
 description: "起動時のリカバリは 6 段ある。checkpoint LSN を探し、redo をスキャンしてページごとに束ね、ページに当て、データディクショナリを開き、binlog と 2PC の決着をつけ、最後に未完了トランザクションを背景スレッドでロールバックする。undo のロールバックだけが接続受付と並行に走ることと、innodb_force_recovery の各レベルが何を諦めるかを、srv_start と mysqld.cc の呼び出し順から読む。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 72
+  order: 82
 ---
 
 > **前提**: [redo ログ](./redo-log-walkthrough/) / [チェックポイント](./checkpoint/)

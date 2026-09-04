@@ -3,7 +3,7 @@ title: "filesort — ソートバッファとマージ"
 description: "Using filesort は「ファイルを使う」という意味ではない。sort_buffer_size に収まればメモリだけで終わり、溢れたときだけ一時ファイルにチャンクを書き、7 本ずつ (MERGEBUFF) マージして 15 本以下 (MERGEBUFF2) に落としてから最終マージする。Sort_merge_passes が数えているのはそのマージ 1 回ぶんだ。行そのものを運ぶ addon fields と行 ID だけを運ぶ rowid sort の分岐、LIMIT があるときの優先度キュー、そして 8.4 では無効化された max_length_for_sort_data を読む。"
 group: "エグゼキュータ"
 sidebar:
-  order: 38
+  order: 39
 ---
 
 > **前提**: [iterator executor](./executor-walkthrough/) / [ORDER BY / GROUP BY](./sort-avoidance-and-ordering/)

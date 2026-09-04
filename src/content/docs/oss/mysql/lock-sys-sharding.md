@@ -3,7 +3,7 @@ title: "lock_sys — 512 シャードと latching"
 description: "かつて InnoDB のロックキューは 1 本の lock_sys->mutex で守られていた。8.4 ではページ用 512 個とテーブル用 512 個の mutex に分割され、その上に「全部止める」ための global rw-latch が乗っている。普段は global を S で取ってシャードの mutex を 1〜2 個、デッドロック検出のような全体を見る操作だけ global を X で取る。この 2 層構造と latching order が、ロック周りのコードの形をほぼ決めている。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 65
+  order: 75
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/)

@@ -3,7 +3,7 @@ title: "トランザクション — trx_t の一生"
 description: "InnoDB のトランザクションは trx_t という構造体 1 つで表現される。読むだけなら ID すら付かず、最初に書いた瞬間に trx_sys_allocate_trx_id で ID をもらう。この ID がロックの持ち主・行の DB_TRX_ID・read view の 3 つを結ぶ唯一の鍵になる。状態遷移の本筋は NOT_STARTED → ACTIVE → (PREPARED) → COMMITTED_IN_MEMORY で、どの遷移でどの latch を持っているかがロック解放と可視性の順序を決めている。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 57
+  order: 67
 ---
 
 > **前提**: [MVCC](./mvcc-basics/) / [トランザクションの調停](./transaction-coordination/)

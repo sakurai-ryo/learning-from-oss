@@ -3,7 +3,7 @@ title: "名前解決と Item ツリー — fix_fields と照合の集約"
 description: "`Query_block::prepare` が SELECT リストから ORDER BY まで順に `fix_fields` を掛け、`Item_field` に `Field *` を繋いで型と照合順序を確定させる。ここで決まる「比較の型」と「比較の照合順序」が、後段でインデックスを使えるかどうかを直接左右する。`agg_item_charsets` が比較文脈と文字列結果文脈で別の規則を使うこと、`item_cmp_type` が文字列と数値の比較を REAL に落とすこと、そこから `WHERE varchar_col = 123` と照合違いの JOIN が全表スキャンになる筋道を追う。"
 group: "パーサとリゾルバ"
 sidebar:
-  order: 23
+  order: 24
 ---
 
 > **前提**: [2 パスと contextualize](./parse-tree-and-contextualize/)

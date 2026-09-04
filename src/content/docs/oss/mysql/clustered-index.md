@@ -3,7 +3,7 @@ title: "クラスタードインデックス — テーブルは PK の B+tree �
 description: "InnoDB にはテーブルという実体がない。あるのは PK をキーとする B+tree 1 本だけで、行データはその葉に住んでいる。dict_index_build_internal_clust が PK の後ろに DB_TRX_ID と DB_ROLL_PTR を差し込み、残りの全列を続ける様子と、PK がないときに振られる DB_ROW_ID がインスタンス全体で 1 本のカウンタである事実。node pointer レコードの構造から、PK の長さが何に効くかまで辿る。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 49
+  order: 59
 ---
 
 > **前提**: [B+tree](./btree-basics/) / [物理構造](./innodb-physical-walkthrough/)

@@ -3,7 +3,7 @@ title: "統計とコストモデル — rec_per_key と server_cost"
 description: "「MySQL の統計情報」を探して sql/opt_statistics.cc を開くと 120 行しかない。カーディナリティ推定の実体は InnoDB 側の rec_per_key と records_in_range で、SQL 層が持っているのは 6 個のコスト定数と、統計が無いときの当て推量だけだ。ヒストグラムはこの経路に乗らず、条件のフィルタ率だけを別に補正する。「インデックスがあるのに使われない」の半分はここで説明がつく。"
 group: "オプティマイザ"
 sidebar:
-  order: 26
+  order: 27
 ---
 
 > **前提**: [JOIN::optimize](./optimizer-walkthrough/)

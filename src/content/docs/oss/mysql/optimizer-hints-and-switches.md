@@ -3,7 +3,7 @@ title: "ヒントと optimizer_switch"
 description: "オプティマイザの挙動を外から変える口は 3 系統ある。23 種のオプティマイザヒント、27 個の optimizer_switch フラグ、そして USE/FORCE/IGNORE INDEX という古い構文。3 つは互いに優先順位を持ち、hint_table_state という 1 本の関数がヒントとスイッチの合流点になっている。/*+ INDEX() */ と FORCE INDEX が同居できないこと、SET_VAR が効く範囲、help 文に載っていないフラグを確かめる。"
 group: "オプティマイザ"
 sidebar:
-  order: 32
+  order: 33
 ---
 
 > **前提**: [アクセスパスの選択](./access-path-selection/) / [join 順序](./join-order-search/)

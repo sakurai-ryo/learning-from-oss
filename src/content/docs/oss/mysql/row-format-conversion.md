@@ -3,7 +3,7 @@ title: "行フォーマット変換 — MySQL の行と InnoDB の行は別物"
 description: "`TABLE::record[0]` に入っているバイト列と、InnoDB のページに載っているバイト列は、同じ行を表していても全く違う並びをしている。整数はエンディアンが逆で符号ビットが反転し、VARCHAR は片方が固定長に padding され、InnoDB 側にはユーザが定義していない 13 バイトの隠し列が付く。この 2 つを 1 列ずつ翻訳する設計図が `row_prebuilt_t::mysql_template` で、カバリングインデックスや ICP が効くかどうかもこの設計図の作られ方で決まる。"
 group: "handler・データディクショナリ・パーティショニング"
 sidebar:
-  order: 42
+  order: 52
 ---
 
 > **前提**: [handler](./handler-walkthrough/)

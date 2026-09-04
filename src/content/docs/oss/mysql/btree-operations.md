@@ -3,7 +3,7 @@ title: "B+tree の操作 — 検索、楽観/悲観挿入、分割、併合"
 description: "InnoDB の B+tree 操作はすべて「まず楽観的にやってみて、駄目なら latch を取り直して悲観的にやる」という 2 段構えになっている。btr_cur_search_to_nth_level が降下しながら親の latch を落とす様子、DB_FAIL が返ったときに何が起きるか、ページ分割の分割点が連番挿入かどうかで変わること、そして木が深くなっても root ページ番号が動かない理由。innodb_fill_factor が普段の INSERT には効かないことも確かめる。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 51
+  order: 61
 ---
 
 > **前提**: [B+tree](./btree-basics/) / [ページの構造](./page-layout/)

@@ -3,7 +3,7 @@ title: "Aurora MySQL は InnoDB のどこを差し替えたか"
 description: "Aurora が置き換えたのは InnoDB の底、ページを書く部分だけだ。redo をストレージノードに送ることが耐久性とレプリケーションとリカバリを同時に果たすので、page cleaner もチェックポイントも doublewrite も消える。一方でバッファプール・MVCC・undo・purge・ロックはそのまま残り、この章の記述がそのまま通用する。どのページが読み替えを必要とし、どのページがしないかを対照表で分ける。Aurora のソースは公開されていないので、典拠は SIGMOD の論文と AWS の公式ドキュメントに限る。"
 group: "横断"
 sidebar:
-  order: 99
+  order: 109
 ---
 
 > **前提**: [バッファプール](./buffer-pool-walkthrough/) / [redo ログ](./redo-log-walkthrough/)

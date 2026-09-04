@@ -3,7 +3,7 @@ title: "2 パス — 文脈自由な PT ツリーと contextualize"
 description: "MySQL の Bison アクションは、文法規則が還元されるたびに `PT_*` ノードを 1 個作るだけで終わる。`Query_block` も `Item_field` も、パースが全部終わってから `contextualize()` / `itemize()` の 2 パス目で作られる。この分割から「構文エラーはセッション状態を変えない」という不変条件が出てくること、`contextualized` フラグが何を守っているか、`SHOW PARSE_TREE` が 1 パス目の出力をそのまま JSON にして見せていることを読む。"
 group: "パーサとリゾルバ"
 sidebar:
-  order: 22
+  order: 23
 ---
 
 > **前提**: [パーサとリゾルバ](./parser-walkthrough/)

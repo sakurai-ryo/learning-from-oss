@@ -3,7 +3,7 @@ title: "アクセスパスの選択 — ref / range / scan、ICP と MRR"
 description: "1 枚のテーブルをどう読むかは best_access_path が決める。ref の候補を全インデックスぶん作って最良を選び、それを range とスキャンのコストと比べる。EXPLAIN の type 列 (const / eq_ref / ref / range / index / ALL) が何から決まるかを関数と行番号まで辿り、Using index condition (ICP) と Using MRR が付く条件と付かない条件を確かめる。"
 group: "オプティマイザ"
 sidebar:
-  order: 28
+  order: 29
 ---
 
 > **前提**: [range 分析](./range-optimizer/) / [統計とコストモデル](./statistics-and-cost-model/)

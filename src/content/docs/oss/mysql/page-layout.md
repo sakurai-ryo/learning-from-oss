@@ -3,7 +3,7 @@ title: "ページの構造 — 38 バイトヘッダ、8 バイトトレイラ�
 description: "16KB のインデックスページを先頭から末尾まで並べる。FIL ヘッダ 38 バイト、インデックスヘッダ 56 バイト、infimum と supremum という番人レコード、下から積むレコード領域、末尾から逆に伸びるページディレクトリ、そして 8 バイトのトレイラ。checksum が 2 か所の穴を飛ばして計算される理由と、Row size too large のあの 8126 という数がどこから来るかもここで確定する。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 47
+  order: 57
 ---
 
 > **前提**: [物理構造](./innodb-physical-walkthrough/)

@@ -44,6 +44,12 @@ MySQL の運用でぶつかる問題は、ほぼ全部「どの層の話なの�
 
 先に walkthrough で経路を通し、そこから lesson に降りる読み方を想定している。
 
+## 縦の道と、その途中にある横の層
+
+上から下へ 1 本の SQL を追う縦の道が主軸だが、途中に 1 群だけ横向きの群を挟んである。[型・文字セット・スキーマオブジェクト](./field-and-types/)の群がそれで、**「値がどう表現されるか」と「テーブルに何が定義されているか」**を扱う。
+
+縦の道は `SELECT id FROM t WHERE id = 1` のような単純な文を追うので、型変換にも照合順序にも外部キーにもトリガにも当たらない。しかしスキーマ設計で実際に迷うのはそちらの側になる。エグゼキュータと handler の間に置いたのは、値の表現が SQL 層の話であり、スキーマオブジェクトがデータディクショナリの話だからだ。
+
 ## 分離レベルの基準
 
 InnoDB の説明はすべて **REPEATABLE READ (InnoDB 既定) を基準**に書く。READ COMMITTED で挙動が変わる箇所は、該当ページごとに注記する。RC で運用している読者は、その注記だけを拾えば差分が分かるようにしてある。
@@ -62,7 +68,7 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 
 ## まず読む 13 ページ
 
-103 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
+114 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
 
 1. [用語集](./glossary/) — 通読しなくていい。知らない語に当たったら戻ってくる
 1. [ソースの読み方](./reading-mysql-source/) — `ut_ad` が消えること、`true` がエラーであること。これは通読する
@@ -114,6 +120,7 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 - [X Protocol — protobuf と 5 バイトフレーム](./x-protocol-messages/)
 - [X Plugin — SQL も CRUD も classic と同じ経路に合流する](./x-plugin-session-and-sql/)
 - [X Plugin のスレッドとパイプライン — イベントループと notice](./x-plugin-threading-and-pipelining/)
+- [コネクションプールとセッション状態 — 接続に何が残るか](./connection-pool-and-session-state/)
 
 パーサとリゾルバ:
 
@@ -143,6 +150,18 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 - [filesort — ソートバッファとマージ](./filesort/)
 - [集約・ウィンドウ・集合演算](./aggregation-window-and-set-ops/)
 - [行の返送 — LIMIT の早期終了、ストリーミング、SQL_BUFFER_RESULT](./sending-rows-and-limit/)
+
+型・文字セット・スキーマオブジェクト:
+
+- [型と Field クラス — 値がバイト列になるまで](./field-and-types/)
+- [文字セットと照合順序 — 比較は weight 列の比較になる](./charset-and-collation/)
+- [sql_mode と厳格モード — 警告がエラーに変わる場所](./sql-mode-and-strict/)
+- [日付時刻とタイムゾーン — TIMESTAMP だけが変換される](./datetime-and-timezone/)
+- [外部キー — 子を書くと親に共有ロックが載る](./foreign-keys/)
+- [生成カラムと関数インデックス — 式に名前を与えて索引する](./generated-columns-and-functional-indexes/)
+- [JSON — バイナリ表現と部分更新](./json-storage-and-partial-update/)
+- [ビュー — マージされるか、実体化されるか](./views-and-view-security/)
+- [トリガとストアドプログラム — 文の外側で動くコード](./triggers-and-stored-programs/)
 
 handler・データディクショナリ・パーティショニング:
 

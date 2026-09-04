@@ -3,12 +3,12 @@ title: "現象から引く索引 — 症状 → 仕組み → ページ → 確�
 description: "この章は SQL が通る層を上から順に下ってきた。最後に、その順序を逆から引けるようにする。デッドロックが出た、ALTER が固まった、レプリカが遅れた、インデックスが使われない — 現象を起点に、それがどの層の話で、どのページで説明していて、どのビューを見れば裏が取れるかを一覧にする。"
 group: "横断"
 sidebar:
-  order: 102
+  order: 112
 ---
 
 ## 何を学んだか
 
-この章の 103 ページは層の順に並んでいる。だが実務で起きるのは現象のほうが先だ。
+この章の 114 ページは層の順に並んでいる。だが実務で起きるのは現象のほうが先だ。
 
 このページは逆引きの索引になっている。**症状 → その症状を生む仕組み → 詳しいページ → 裏を取るビュー**の 4 列で引く。
 
@@ -78,6 +78,36 @@ sidebar:
 | 大量 DELETE のロールバックが終わらない           | ロールバックは undo を 1 レコードずつ逆適用する。コミットより遅い                          | [コミットとロールバック](./commit-and-rollback-internals/)                   | `I_S.INNODB_TRX` の `trx_rows_modified`                                               |
 | `SELECT` の結果が古い                            | RR では最初の読みでスナップショットが固定される。RC は文ごと                               | [read view](./read-view-and-visibility/)                                     | `START TRANSACTION WITH CONSISTENT SNAPSHOT` の有無                                   |
 
+## 型・スキーマ定義
+
+| 症状                                               | 仕組み                                                                                                | ページ                                                                                          | 確認するビュー                              |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `Data truncated` が警告のときとエラーのときがある  | 厳格モードは `Strict_error_handler` が深刻度を昇格させる。`SELECT` とデータ変更でない文には積まれない | [sql_mode と厳格モード](./sql-mode-and-strict/)                                                 | `@@session.sql_mode`                        |
+| `INSERT IGNORE` が想定より広く黙る                 | `Ignore_error_handler` の対象に外部キー違反・CHECK 違反・`NOT NULL` 違反が入っている                  | [sql_mode と厳格モード](./sql-mode-and-strict/)                                                 | `SHOW WARNINGS`                             |
+| `Row size too large ... is 65535`                  | Server 側の `pack_length` 合計の検査。InnoDB の 8126 とは別の検査                                     | [型と Field クラス](./field-and-types/)                                                         | `SHOW CREATE TABLE`                         |
+| 非厳格モードで長すぎるインデックスが作れてしまう   | `ER_TOO_LONG_KEY` も昇格対象。非厳格では警告 + プレフィックスに切り詰め                               | [sql_mode と厳格モード](./sql-mode-and-strict/)                                                 | `SHOW CREATE TABLE` のキー長                |
+| `Specified key was too long`                       | キー長はバイト数。utf8mb4 は 1 文字 4 バイトで数える                                                  | [文字セットと照合順序](./charset-and-collation/) / [セカンダリインデックス](./secondary-index/) | `SHOW CREATE TABLE`                         |
+| 5.7 から移行したら UNIQUE に重複が入るようになった | 8.0 既定の `utf8mb4_0900_ai_ci` は **NO PAD**。末尾空白が区別される                                   | [文字セットと照合順序](./charset-and-collation/)                                                | `SHOW TABLE STATUS` の `Collation`          |
+| `ORDER BY` のメモリが想定より要る                  | ソートキーは元の文字列でなく weight 列。長さは `strnxfrmlen` で決まる                                 | [文字セットと照合順序](./charset-and-collation/) / [filesort](./filesort/)                      | `Sort_merge_passes`                         |
+| 接続によって時刻の表示がずれる                     | `TIMESTAMP` はセッションのタイムゾーンで変換される。`DATETIME` はされない                             | [日付時刻とタイムゾーン](./datetime-and-timezone/)                                              | `@@session.time_zone`                       |
+| `TIMESTAMP` に 2038 年以降が入らない               | 列型の上限が `int32` の最大値。`my_time_t` 自体は 64 ビット                                           | [日付時刻とタイムゾーン](./datetime-and-timezone/)                                              | `DATETIME` への変更を検討                   |
+| `Unknown or incorrect time zone`                   | `mysql.time_zone*` が空。名前付きゾーンは投入が要る (`+09:00` なら不要)                               | [日付時刻とタイムゾーン](./datetime-and-timezone/)                                              | `SELECT COUNT(*) FROM mysql.time_zone_name` |
+| 子テーブルへの `INSERT` が親の `UPDATE` を待つ     | 外部キー検査が親行に `LOCK_S` を取る。RR でもギャップは取らない                                       | [外部キー](./foreign-keys/)                                                                     | `data_locks` の `S,REC_NOT_GAP`             |
+| `ON DELETE CASCADE` で消えた行がトリガに乗らない   | カスケードは InnoDB 内で完結し SQL 層に戻らない                                                       | [外部キー](./foreign-keys/) / [トリガ](./triggers-and-stored-programs/)                         | トリガでの監査ログの欠落                    |
+| `ER_FK_DEPTH_EXCEEDED`                             | `FK_MAX_CASCADE_DEL = 15`。カスケードの再帰上限                                                       | [外部キー](./foreign-keys/)                                                                     | FK の連鎖を辿る                             |
+| 関数インデックスが使われない                       | `WHERE` の式が定義の式と一致しないと使えない (`->>` は別の式)                                         | [生成カラムと関数インデックス](./generated-columns-and-functional-indexes/)                     | `SHOW CREATE TABLE` の `((...))`            |
+| `Functional index on a lob` で作れない             | 式の結果型が BLOB / TEXT になっている。`CAST(... AS CHAR(N))` が要る                                  | [生成カラムと関数インデックス](./generated-columns-and-functional-indexes/)                     | `ER_FUNCTIONAL_INDEX_ON_LOB`                |
+| JSON のキー順が入力と変わる                        | バイナリ形式が**長さ順・辞書順**でキーを保持する。重複キーも空白も消える                              | [JSON](./json-storage-and-partial-update/)                                                      | 元テキストが要るなら `TEXT`                 |
+| 大きい JSON の 1 フィールド更新が遅い              | 部分更新の条件を外れて文書全体を書き直している                                                        | [JSON](./json-storage-and-partial-update/)                                                      | `optimizer_trace` の `cause`                |
+| ビューが遅い                                       | 集約 / `UNION` / `LIMIT` / ウィンドウ関数があると MERGE できず実体化される                            | [ビュー](./views-and-view-security/)                                                            | `EXPLAIN` の `<derived>`、`SHOW WARNINGS`   |
+| `DROP USER` したらビューが壊れた                   | `SQL SECURITY DEFINER` が既定。定義者の権限で実行される                                               | [ビュー](./views-and-view-security/)                                                            | `I_S.VIEWS` の `definer`                    |
+| `sql_mode` を変えたのにトリガの挙動が変わらない    | 作成時の `sql_mode` と文字セットが凍結される                                                          | [トリガとストアドプログラム](./triggers-and-stored-programs/)                                   | `I_S.TRIGGERS` の `sql_mode`                |
+| 触っていないテーブルがデッドロックに出る           | prelocking がトリガの参照先まで開いてロックする                                                       | [トリガとストアドプログラム](./triggers-and-stored-programs/)                                   | `SHOW ENGINE INNODB STATUS`                 |
+| トリガの中の文がダイジェストに出ない               | パース時に PSI とダイジェストが `nullptr` に落とされる                                                | [トリガとストアドプログラム](./triggers-and-stored-programs/)                                   | `events_statements_history` の入れ子        |
+| 同じクエリが接続によって成功したり失敗したりする   | セッション変数がプールの接続ごとに違う                                                                | [コネクションプールとセッション状態](./connection-pool-and-session-state/)                      | `performance_schema.variables_by_thread`    |
+| `Table already exists` がたまに出る                | 一時テーブルが返却された接続に残っている                                                              | [コネクションプールとセッション状態](./connection-pool-and-session-state/)                      | `I_S.INNODB_TEMP_TABLE_INFO`                |
+| `History list length` が伸び続ける (プール利用時)  | 返却前に `COMMIT` していない接続が read view を保持している                                           | [コネクションプールとセッション状態](./connection-pool-and-session-state/) / [purge](./purge/)  | `I_S.INNODB_TRX` の `trx_started`           |
+
 ## DDL
 
 | 症状                                                | 仕組み                                                                                                                                       | ページ                                                                                | 確認するビュー                                                                        |
@@ -102,7 +132,7 @@ sidebar:
 | ダーティページが減らない               | page cleaner が `innodb_io_capacity` (8.4 既定 **10000**) と `innodb_max_dirty_pages_pct` の間で追いついていない                                                                                    | [flush list と page cleaner](./flush-list-and-page-cleaner/)                                                               | `Innodb_buffer_pool_pages_dirty` / エラーログの `Page cleaner took NNNNms`    |
 | 8.0 のチューニング記事が当てはまらない | 8.4 で既定が変わっている: `innodb_change_buffering=none`、`innodb_adaptive_hash_index=OFF`、`innodb_io_capacity=10000`、`innodb_flush_neighbors=0`、`innodb_flush_method` 未指定なら O_DIRECT probe | [change buffer](./change-buffer/) / [adaptive hash index](./adaptive-hash-index/) / [読み込みと I/O](./read-ahead-and-io/) | `SHOW GLOBAL VARIABLES`                                                       |
 | メモリが二重に使われている             | `innodb_flush_method` が O_DIRECT でないとページキャッシュとバッファプールに同じデータが載る                                                                                                        | [読み込みと I/O](./read-ahead-and-io/)                                                                                     | `SHOW ENGINE INNODB STATUS` の `Using Linux native AIO`                       |
-| JSON の部分更新が効かない              | `binlog_row_value_options=PARTIAL_JSON` と、LOB が in-place で収まる条件の両方が要る                                                                                                                | [LOB](./lob-storage/)                                                                                                      | `binlog_row_value_options`                                                    |
+| JSON の部分更新が効かない              | `binlog_row_value_options=PARTIAL_JSON` と、LOB が in-place で収まる条件の両方が要る                                                                                                                | [JSON](./json-storage-and-partial-update/) / [LOB](./lob-storage/)                                                         | `binlog_row_value_options`                                                    |
 | `.frm` がない                          | 8.0 以降メタデータは `mysql.ibd` の DD に入っている                                                                                                                                                 | [データディクショナリ](./data-dictionary/)                                                                                 | `I_S` (DD 上の view)                                                          |
 | `Table_open_cache_overflows` が増える  | `table_open_cache` の LRU から追い出されている                                                                                                                                                      | [データディクショナリ](./data-dictionary/)                                                                                 | `Opened_tables` / `Opened_table_definitions`                                  |
 

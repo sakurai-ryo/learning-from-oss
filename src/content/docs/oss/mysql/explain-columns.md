@@ -3,7 +3,7 @@ title: "EXPLAIN の列 — どの構造体から来ているか"
 description: "EXPLAIN の 12 列は qep_row という 1 個のバッファの col_* フィールドをそのまま並べたものだ。各列を埋めるのは Explain::prepare_columns() が順に呼ぶ 11 個の virtual で、rows は POSITION::rows_fetched、filtered は POSITION::filter_effect、key_len は KEY::key_length から来る。Extra は 35 個の Extra_tag だが、Using temporary と Using filesort だけはテーブルごとの情報ではなくクエリブロック全体のビットマスクから来る。列と構造体の対応表を全列ぶん埋める。"
 group: "観測手段"
 sidebar:
-  order: 93
+  order: 103
 ---
 
 > **前提**: [アクセスパスの選択](./access-path-selection/) / [JOIN::optimize](./optimizer-walkthrough/)

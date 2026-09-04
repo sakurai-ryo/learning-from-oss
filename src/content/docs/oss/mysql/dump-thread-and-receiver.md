@@ -3,7 +3,7 @@ title: "dump thread と receiver — binlog がレプリカに届くまで"
 description: "レプリカは COM_BINLOG_DUMP_GTID を 1 回送ったあと、応答が終わらない片方向のストリームを受け続ける。source 側の dump thread は LOCK_log を取らずに atomic_binlog_end_pos までを読み、そこに追いつくと条件変数で寝てハートビートを打つ。レプリカ側の receiver は受け取ったバイト列をほぼそのまま relay log に書き、位置を mysql.slave_master_info に記録する。この 2 本のスレッドの間に何が流れ、どこで詰まるかを追う。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 88
+  order: 98
 ---
 
 > **前提**: [binlog](./binlog-walkthrough/) / [binlog イベント](./binlog-events/)
