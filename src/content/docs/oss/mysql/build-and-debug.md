@@ -3,7 +3,7 @@ title: "ビルドとデバッガで追う — WITH_DEBUG、DBUG、gdb/lldb"
 description: "cmake -DWITH_DEBUG=1 でできるバイナリは、リリースビルドと同じソースから作られた別のプログラムだ。ut_ad が消え、DBUG_TRACE が消え、DEBUG_SYNC が消え、hypergraph オプティマイザと SHOW PARSE_TREE が既定で使えるようになる。この差を押さえたうえで、DBUG のトレースファイル、DBUG_EXECUTE_IF と DEBUG_SYNC を組み合わせた競合状態の再現、そしてこの章の各層に対応するブレークポイントの置き場所をまとめる。"
 group: "横断"
 sidebar:
-  order: 110
+  order: 122
 ---
 
 > **前提**: [ディレクトリ地図](./directory-map/)

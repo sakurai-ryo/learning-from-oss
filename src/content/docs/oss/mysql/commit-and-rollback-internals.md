@@ -3,7 +3,7 @@ title: "コミットとロールバックの内部 — InnoDB 側で何が確定
 description: "trx_commit_in_memory の中で起きることには決まった順序がある。rw_trx_ids から抜けて read view を閉じ、状態を COMMITTED_IN_MEMORY にして暗黙ロックを手放し、最後に明示ロックを解放する。ロールバックはこれと対称ではない。undo を 1 レコードずつ逆適用してから、最後に trx_commit を呼ぶ。文単位のロールバックではロックが 1 つも解放されない。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 76
+  order: 84
 ---
 
 > **前提**: [トランザクション](./transaction-walkthrough/) / [ロックの種類 (InnoDB)](./lock-modes-and-types/)

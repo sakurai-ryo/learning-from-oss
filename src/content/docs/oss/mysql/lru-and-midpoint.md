@@ -3,7 +3,7 @@ title: "LRU と midpoint 挿入 — 全表スキャンでキャッシュを吹�
 description: "InnoDB の LRU は教科書どおりの LRU ではない。ディスクから読んだページはリストの先頭ではなく約 3/8 の位置 (midpoint) に入り、そこから先頭に昇格するには「2 回目のアクセスが 1 秒以上あとに来る」必要がある。この 2 段構えが、1 回の全表スキャンで warm cache が全部押し出される事故を防いでいる。BUF_LRU_OLD_MIN_LEN = 512 未満では分割そのものが無効になることも含めて読む。"
 group: "InnoDB — バッファプール"
 sidebar:
-  order: 64
+  order: 67
 ---
 
 > **前提**: [バッファプール](./buffer-pool-walkthrough/)

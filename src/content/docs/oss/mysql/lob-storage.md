@@ -3,7 +3,7 @@ title: "LOB — TEXT / BLOB / JSON はどこに置かれるか"
 description: "大きい列がレコードの外に出る条件は page_zip_rec_needs_ext 1 つで、行フォーマットに関係なく同じ関数が使われる。外に出た列の跡地に残る 20 バイトの ref_t の中身を 1 バイト単位で読み、BTR_EXTERN_LEN の上位 3 ビットがフラグであることを確かめる。JSON の部分更新が in-place になる条件と、一度でも列を丸ごと置き換えると二度と部分更新されなくなる仕掛けも追う。"
 group: "InnoDB — 物理構造"
 sidebar:
-  order: 62
+  order: 63
 ---
 
 > **前提**: [レコードの構造](./record-format/) / [ページの構造](./page-layout/)

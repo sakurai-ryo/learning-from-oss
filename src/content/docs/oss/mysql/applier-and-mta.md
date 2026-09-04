@@ -3,7 +3,7 @@ title: "applier と並列適用 — LOGICAL_CLOCK と writeset"
 description: "8.4 のレプリカは既定で 4 本の worker を持つ並列アプライヤだ。並列にしてよいかを決めているのは source が Gtid_log_event に書き込んだ last_committed / sequence_number の 2 つの整数で、その値を縮めているのが writeset による依存追跡である。binlog_transaction_dependency_tracking は 8.4 で削除され WRITESET 固定になった。コーディネータがどう待ち、GAQ がどう回り、replica_preserve_commit_order が何を直列化して何をしないかを追う。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 99
+  order: 111
 ---
 
 > **前提**: [dump thread と receiver](./dump-thread-and-receiver/) / [binlog イベント](./binlog-events/)

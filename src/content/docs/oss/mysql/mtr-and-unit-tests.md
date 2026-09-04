@@ -3,7 +3,7 @@ title: "MTR とユニットテストの読み方"
 description: "MySQL のテストはほぼ全部が結合テストだ。8982 本の .test ファイルが SQL を流し、その標準出力を .result ファイルと 1 バイト単位で diff する。B+tree にもロックにも単体テストは存在せず、unittest/gunit/innodb/ にあるのは 18 個のユーティリティ層のテストだけ。この構成になった理由と、そのおかげで .result ファイルが「実行可能な仕様書」として grep できるようになっていることを読む。"
 group: "横断"
 sidebar:
-  order: 111
+  order: 123
 ---
 
 > **前提**: [ビルドとデバッガ](./build-and-debug/) / [ディレクトリ地図](./directory-map/)

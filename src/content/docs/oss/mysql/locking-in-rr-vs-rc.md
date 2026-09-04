@@ -3,7 +3,7 @@ title: "RR と RC の違い — ギャップロックが消える場所"
 description: "REPEATABLE READ と READ COMMITTED の差は、trx_t の 4 つの述語 (skip_gap_locks / allow_semi_consistent / releases_non_matching_rows / releases_gap_locks_at_prepare) にほぼ集約されている。使われているのは主に row0sel.cc・row0ins.cc・ha_innodb.cc・trx0trx.cc で、lock0lock.cc には 2 箇所しか出てこない。RC でもギャップロックが消えない場所と、RC が ROW binlog を要求する理由まで含めて差分だけを並べる。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 72
+  order: 79
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [分離レベルとアノマリ](./isolation-levels-and-anomalies/)

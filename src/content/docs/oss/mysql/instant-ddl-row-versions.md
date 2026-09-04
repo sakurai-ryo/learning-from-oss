@@ -3,7 +3,7 @@ title: "INSTANT の実体 — 行にバージョン番号を持たせる"
 description: "INSTANT ADD/DROP COLUMN が一瞬で終わるのは、既存の行を 1 バイトも書き換えないからだ。代わりに新しく書く行だけが 1 バイトの版番号を持ち、列側は dd::Column の se_private_data に version_added / version_dropped / physical_pos を積む。8.0.13 の instant cols と 8.0.29 の row versions は別の機構で、レコードヘッダの別のビットを使い、同じ表で両方は立たない。64 回で打ち止めになる理由と、排他 MDL がやはり必要な理由まで。"
 group: "DDL"
 sidebar:
-  order: 91
+  order: 103
 ---
 
 > **前提**: [ALGORITHM と LOCK の決定](./alter-algorithm-selection/) / [レコードの構造](./record-format/)

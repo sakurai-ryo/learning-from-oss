@@ -3,7 +3,7 @@ title: "レプリカ遅延の正体 — Seconds_Behind_Source の計算式"
 description: "Seconds_Behind_Source は 3 行の式でしかない。時計の差は接続時に一度測ったきりで、比較対象は source ではなく同じレプリカの receiver である。last_master_timestamp が 0 なら NULL ではなく 0 が返り、MTA では GAQ の先頭が退出するまで値が動かない。0 が「追いついた」を意味しないことをコードで示し、receiver lag と applier lag を performance_schema の timestamp 列で分けて測る手順に着地する。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 101
+  order: 113
 ---
 
 > **前提**: [applier と並列適用](./applier-and-mta/) / [dump thread と receiver](./dump-thread-and-receiver/)

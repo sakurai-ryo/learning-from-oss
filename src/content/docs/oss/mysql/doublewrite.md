@@ -3,7 +3,7 @@ title: "doublewrite — torn page への保険"
 description: "16KB のページを 1 回の write(2) で書いても、デバイスが原子的に書くのは 512 バイトか 4KB だ。途中で電源が落ちると半分だけ新しいページが残り、redo は「そのページの現在の内容」を前提にしているので直せない。doublewrite は同じページを 2 箇所に書くことでこれを回避する。ファイル名にページサイズが入る理由、DETECT_ONLY が何を捨てて何を残すか、そして Aurora のようなストレージでなぜ丸ごと不要になるか。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 81
+  order: 91
 ---
 
 > **前提**: [ページとバッファ](./page-and-buffer/) / [flush list と page cleaner](./flush-list-and-page-cleaner/)

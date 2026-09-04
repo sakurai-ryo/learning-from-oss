@@ -3,7 +3,7 @@ title: "ロックの種類 — record / gap / next-key / insert intention、暗�
 description: "InnoDB の行ロックは lock_t 1 個が行 1 件ではなくページ 1 枚に対応し、その中のヒープ番号にビットが立つ。next-key lock はフラグが 1 つも立っていない状態 (LOCK_ORDINARY == 0) で表され、gap / record-not-gap / insert intention がフラグとして足される。待つかどうかの判定は rec_lock_check_conflict のガード節に全部入っていて、そこから FOR UPDATE / FOR SHARE / SKIP LOCKED / NOWAIT の挙動が読み取れる。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 71
+  order: 78
 ---
 
 > **前提**: [ロックの種類 (前提)](./lock-kinds/) / [ページの構造](./page-layout/)

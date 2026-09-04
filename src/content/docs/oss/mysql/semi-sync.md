@@ -3,7 +3,7 @@ title: "半同期レプリケーション — AFTER_SYNC が保証するもの"
 description: "semisync は 8.4 でもプラグインのままで、components/ には移っていない。既定の wait point AFTER_SYNC は、グループコミットの commit ステージで LOCK_commit を握ったまま ha_commit_low の前でレプリカの ACK を待つ。だから止まったレプリカは待っているセッションだけでなく commit pipeline 全体を止める。AFTER_COMMIT との違い、ACK を集める専用スレッド、timeout で非同期に落ちる仕組みまでコードで確かめる。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 100
+  order: 112
 ---
 
 > **前提**: [2PC とグループコミット](./two-phase-commit-and-group-commit/) / [dump thread と receiver](./dump-thread-and-receiver/)

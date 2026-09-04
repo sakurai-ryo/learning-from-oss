@@ -3,7 +3,7 @@ title: "data_locks と sys スキーマ — ロック待ちを見る"
 description: "INFORMATION_SCHEMA.INNODB_LOCKS はもう存在しない。ロックは performance_schema.data_locks から見る。この表は事前に作られておらず、SELECT のたびに InnoDB がシャードの latch を取りながらチャンク単位で走査して行を作る。LOCK_MODE の X と X,GAP と X,REC_NOT_GAP の違い、LOCK_DATA が supremum pseudo-record や NULL になる条件、そして sys スキーマのビューが何を join しているかを読む。"
 group: "観測手段"
 sidebar:
-  order: 106
+  order: 118
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [performance_schema](./performance-schema-internals/)

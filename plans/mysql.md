@@ -44,7 +44,7 @@ InnoDB の説明は REPEATABLE READ (InnoDB 既定) を基準に書き、READ CO
 - hypergraph オプティマイザの内部 (対比 1 ページのみ。8.4 では release ビルドで有効化できない)
 - 旧 `libbinlogevents/` (8.4.11 では `libs/mysql/binlog/event/` への転送スタブ)
 
-## 構成 (概要 + 114 ページ / 17 群)
+## 構成 (概要 + 126 ページ / 17 群)
 
 確認時の表では「パーティショニング」を 1 ページの独立群にしていたが、1 ページだけの sidebar 群を避けて群 7 に置いた。
 
@@ -518,3 +518,48 @@ classic 6 ページ + X Protocol 3 ページ。クライアント側は同 repo 
 - **トリガは作成時の `sql_mode` と文字セット 3 種を凍結する。** `Trigger_creation_ctx` が `character_set_client` / `collation_connection` / データベースの照合順序を持ち、パース時に差し替えて戻す。パース中は `m_digest` と `m_statement_psi` が `nullptr` にされるので、トリガ内の文は独立したダイジェストにならない
 - **`COM_RESET_CONNECTION` はセッション変数をグローバル値で丸ごと上書きする。** `THD::init` → `plugin_thdvar_init` の `thd->variables = global_system_variables`。1 変数ずつ既定に戻すのではないので、接続確立時に `SET` した値も消える
 - **`THD::cleanup_connection` の `#ifndef NDEBUG` ブロックが、セッションの残留物の完全な一覧になっている** (分離レベル / autocommit / prepared_stmt_count / 診断エリア / 一時テーブル / `LOCK TABLES`)
+
+### InnoDB 群の増補 (2026-09-04)
+
+InnoDB 5 群に 12 ページ追加し、章は **126 ページ**になった。追加後の order は次のとおり (この節が最新。上の表の order 列は 群 6.5 追加時点から stale)。
+
+| order | slug                                 | 群              | 中身                                                                                                                                          |
+| ----- | ------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 62    | `fsp-segments-and-extents`           | 物理構造        | FSP_HDR / XDES / FSEG inode、`fseg_alloc_page_no` の 7 分岐、`FSEG_FRAG_LIMIT = 32`、拡張は 32MB まで 1MB / 以降 4MB、`Data_free` の正体      |
+| 64    | `tablespace-files-and-import-export` | 物理構造        | space_id の範囲、`FLUSH TABLES FOR EXPORT` が purge を全体停止、`PageConverter`、TRUNCATE = rename + drop + create                            |
+| 65    | `temporary-tables-in-innodb`         | 物理構造        | `MTR_LOG_NO_REDO`、`trx->rsegs.m_noredo`、セッション一時表領域プール (1 セッション最大 2 個、INIT_SIZE = 10)                                  |
+| 70    | `latches-and-mutexes`                | バッファプール  | `latch_level_t` の順序、`LatchDebug` は `innodb_sync_debug` 依存、spin 3 変数、SX の `lock_word`、600 秒 + 11 回で `ib::fatal`                |
+| 71    | `innodb-memory`                      | バッファプール  | `ut::` と `mem_heap`、`memory/innodb/*` の PFS キー、log buffer 既定 64MB、`innodb_ddl_buffer_size` は THDVAR                                 |
+| 76    | `row-read-path`                      | trx/MVCC/ロック | `row_search_mvcc` の近道 3 種、`MYSQL_FETCH_CACHE_SIZE = 8` / `THRESHOLD = 4`、`can_prefetch_records()`、ICP メトリクス                       |
+| 77    | `row-dml-implementation`             | trx/MVCC/ロック | `row0del.cc` は存在しない、DELETE は `is_delete` な UPDATE、ord field 変化で delete-mark + insert、セカンダリは常に入れ直し                   |
+| 81    | `auto-increment`                     | trx/MVCC/ロック | `dict_table_autoinc_log` は増えたときだけ書く・flush しない、redo → `innodb_dynamic_metadata` → DD の 3 段、`.cfg` なし IMPORT で索引読み直し |
+| 85    | `xa-and-savepoint`                   | trx/MVCC/ロック | `trx_savept_t` は undo 番号 1 個、部分ロールバックはロックを返さない、文の巻き戻しも同じ機構、PREPARED は purge を止める                      |
+| 88    | `redo-disabled-paths`                | 耐久性          | `mtr_t::Logging` の 4 状態、`LOG_HEADER_FLAG_CRASH_UNSAFE` で起動拒否、一括構築は flush observer で担保                                       |
+| 95    | `undo-tablespaces-and-truncate`      | 背景スレッド    | 最小 2 個の理由、mark → empty → truncate の 3 段、round-robin 選択、truncate で space_id が変わる                                             |
+| 98    | `dict-cache`                         | 背景スレッド    | `table_LRU` / `table_non_LRU`、外部キーと AHI は evict 不可、上限は `table_definition_cache`、active 50% / idle 100%                          |
+
+既存ページの order は 群 8 以降を振り直した (56-58 据置、59-61 は -1 相当の再配置、以降は新規スロットを空けて +1〜+12)。DDL 以降は 100-124 のまま。
+
+#### 計画から落としたページと理由
+
+- **`page-search-and-directory` (ページ内探索とページディレクトリ)** — `page-layout` が `page_cur_search_with_match`、スロットの 4〜8 件所有、`PAGE_GARBAGE` まで既に書いており重複。代わりに `row-read-path` を群 10 に入れた
+- **`buffer-pool-instances-and-resize`** — `buffer-pool-walkthrough` が chunk / instance / `buf_resize_thread` / dump-load を既にカバー。代わりに `innodb-memory` を置いた
+- **`redo-format-and-resize`** — ログブロック 512B の構造は `redo-log-walkthrough`、`MLOG_*` は `mini-transaction`、`Log_files_capacity` と `innodb_redo_log_capacity` は `redo-log-walkthrough` にある。代わりに `redo-disabled-paths` を置いた
+
+#### 増補で分かったこと
+
+- **`row0del.cc` は存在しない。** DELETE は `ha_innobase::delete_row` が `upd_node->is_delete = true` を立てて `row_update_for_mysql` を呼ぶ。undo 側の `row0uins.cc` / `row0umod.cc` は別
+- **7 分岐の割り当て関数は `fseg_alloc_page_no` (L2743)。** `fseg_alloc_free_page_low` (L2970) はそれを呼んで block を返すラッパ
+- **`Data_free` はセグメント内の空きを数えない。** `fsp_get_available_space_in_free_extents` はフリーリスト + free limit 上の未初期化領域 − (2 エクステント + 1%)。1MB 未満のファイルは常に 0
+- **`FLUSH TABLES ... FOR EXPORT` は `trx_purge_stop()` を呼ぶ。** 対象テーブルだけでなくサーバ全体の purge が止まる
+- **セッション一時表領域が返却・truncate されるのは接続が切れたときだけ。** `DROP TEMPORARY TABLE` では戻らない (`Tablespace_pool::free_ts`)
+- **`ibtmp1` にはもうユーザ一時表のデータは入らない。** 入るのは一時表用 rseg (`trx_sys->tmp_rsegs`)
+- **`INNODB_SESSION_TEMP_TABLESPACES.ID` は space_id ではなくスレッド ID。** space_id は `SPACE` 列。`PURPOSE` に USER / INTRINSIC / SLAVE / NONE
+- **`innodb_log_buffer_size` の既定は 8.4 で 64MB** (`INNODB_LOG_BUFFER_SIZE_DEFAULT`)。8.0 系の 16MB のつもりでメモリ見積もりをすると外す
+- **`innodb_ddl_buffer_size` / `innodb_ddl_threads` は `MYSQL_THDVAR`** = セッション変数。同時 DDL 数と掛け算になる
+- **Semaphore wait のクラッシュは 600 秒ちょうどではない。** 同じ待ち手・同じセマフォが 11 回連続 (約 11 秒) 観測されて初めて `ib::fatal`
+- **先読み (fetch cache) は 5 行目から。** `n_rows_fetched >= MYSQL_FETCH_CACHE_THRESHOLD (4)` か `ROW_SEL_EXACT` のときだけ。`select_lock_type != LOCK_NONE` / BLOB / 主キーなしで無効
+- **AHI の探索近道は 8.4 既定では使われない。** 条件に `btr_search_enabled` が入っており、`innodb_adaptive_hash_index` の既定が OFF
+- **`ROLLBACK TO SAVEPOINT` はロックを 1 つも解放しない。** `trx_rollback_finish` を呼ぶのは `savept == nullptr` の完全ロールバックだけ
+- **undo テーブルスペースの truncate は space_id を変える。** `trx_undo_truncate_tablespace` のコメントに明記。だから最小 2 個が要る
+- **辞書キャッシュの上限は `table_definition_cache` を流用している。** `innobase_get_table_cache_size()` が `table_def_size` を返すだけで、InnoDB 専用の設定はない

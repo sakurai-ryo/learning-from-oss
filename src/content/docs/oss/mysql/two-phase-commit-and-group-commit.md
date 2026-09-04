@@ -3,7 +3,7 @@ title: "2PC とグループコミット — InnoDB と binlog をどう揃える
 description: "binlog を有効にすると commit は 2 相コミットになり、その調停者は MYSQL_BIN_LOG になる。ordered_commit のステージは「3 段階」と説明されがちだが、実際には StageID が 5 つあり、キューの mutex は 4 本で、そのうち 1 本は 2 つのステージが共有している。どのステージのリーダーがどの mutex を持ったまま何をするか、mutex の受け渡しがどの順で起きるか、binlog_order_commits を切ると何が消えるか、そしてクラッシュ後に XID がどう突き合わされるかを、コードの行に対応づけて確定させる。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 96
+  order: 108
 ---
 
 > **前提**: [binlog](./binlog-walkthrough/) / [redo ログ](./redo-log-walkthrough/)

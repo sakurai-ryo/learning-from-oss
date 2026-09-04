@@ -3,7 +3,7 @@ title: "read view と可視性 — スナップショットの正体は 3 つの
 description: "InnoDB の一貫読み取りは、データのコピーではなく 4 つのフィールドで表現される。up_limit_id より小さい ID は無条件に見え、low_limit_id 以上は無条件に見えず、その間だけソート済み配列を二分探索する。この 3 分岐が MVCC のすべてで、REPEATABLE READ ではこの view が最初の読みで 1 回作られ、READ COMMITTED では文ごとに捨てられて作り直される。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 69
+  order: 74
 ---
 
 > **前提**: [MVCC](./mvcc-basics/) / [undo ログ](./undo-log/)

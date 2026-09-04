@@ -3,7 +3,7 @@ title: "セカンダリインデックスと MVCC — 葉に版がない"
 description: "セカンダリインデックスの葉には DB_TRX_ID も DB_ROLL_PTR もない。だから「この索引エントリが自分の read view から見えるか」を索引だけでは決められず、InnoDB はページヘッダの PAGE_MAX_TRX_ID という 1 つの数で近似する。この近似が外れるとクラスタード側の版鎖まで降りることになり、covering index のはずのクエリが二度引きに化ける。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 70
+  order: 75
 ---
 
 > **前提**: [セカンダリインデックス](./secondary-index/) / [read view と可視性](./read-view-and-visibility/)

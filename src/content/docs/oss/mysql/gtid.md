@@ -3,7 +3,7 @@ title: "GTID — トランザクションに世界で一意な名前を"
 description: "GTID はファイル名とオフセットの代わりにトランザクションそのものに名前を付ける。8.4 では UUID にタグを足せるようになり、Sid_map は Tsid_map に改名された。番号を決めているのは flush ステージのリーダーで、キューの順序がそのまま GNO の順序になる。gtid_executed が単一区間に保たれる理由、mysql.gtid_executed テーブルがいつ書かれるか、auto-position のフェイルオーバーで dump thread が何を見て送信をスキップするか、read-your-writes をどう作るかまで追う。"
 group: "binlog とレプリケーション"
 sidebar:
-  order: 97
+  order: 109
 ---
 
 > **前提**: [binlog イベント](./binlog-events/) / [2PC とグループコミット](./two-phase-commit-and-group-commit/)

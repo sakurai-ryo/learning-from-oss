@@ -68,7 +68,7 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 
 ## まず読む 13 ページ
 
-114 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
+126 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
 
 1. [用語集](./glossary/) — 通読しなくていい。知らない語に当たったら戻ってくる
 1. [ソースの読み方](./reading-mysql-source/) — `ut_ad` が消えること、`true` がエラーであること。これは通読する
@@ -179,7 +179,10 @@ InnoDB — 物理構造:
 - [クラスタードインデックス — テーブルは PK の B+tree である](./clustered-index/)
 - [セカンダリインデックス — 葉には PK が入っている](./secondary-index/)
 - [B+tree の操作 — 検索、楽観/悲観挿入、分割、併合](./btree-operations/)
+- [セグメントとエクステント — .ibd はページ単位では伸びない](./fsp-segments-and-extents/)
 - [LOB — TEXT / BLOB / JSON はどこに置かれるか](./lob-storage/)
+- [テーブルスペースのファイル — .ibd を別サーバに持っていく](./tablespace-files-and-import-export/)
+- [一時テーブル — redo を書かない InnoDB](./temporary-tables-in-innodb/)
 
 InnoDB — バッファプール:
 
@@ -187,6 +190,8 @@ InnoDB — バッファプール:
 - [LRU と midpoint 挿入 — 全表スキャンでキャッシュを吹き飛ばさない](./lru-and-midpoint/)
 - [flush list と page cleaner — dirty page はいつ書かれるか](./flush-list-and-page-cleaner/)
 - [読み込みと I/O — read-ahead、AIO、O_DIRECT](./read-ahead-and-io/)
+- [ラッチとミューテックス — 順序が決まっているから固まらない](./latches-and-mutexes/)
+- [InnoDB のメモリ — バッファプール以外に何が食うか](./innodb-memory/)
 
 InnoDB — トランザクション・MVCC・ロック:
 
@@ -194,17 +199,22 @@ InnoDB — トランザクション・MVCC・ロック:
 - [undo ログ — 巻き戻しと古い版の両方に使う](./undo-log/)
 - [read view と可視性 — スナップショットの正体](./read-view-and-visibility/)
 - [セカンダリインデックスと MVCC — 葉に版がない](./secondary-index-visibility/)
+- [行の読み取り経路 — row_search_mvcc が 1 行返すまで](./row-read-path/)
+- [INSERT / UPDATE / DELETE の実装 — DELETE 専用のコードは無い](./row-dml-implementation/)
 - [ロックの種類 — record / gap / next-key / insert intention、暗黙ロック](./lock-modes-and-types/)
 - [RR と RC の違い — ギャップロックが消える場所](./locking-in-rr-vs-rc/)
 - [INSERT のロック — insert intention、重複検査、AUTO_INCREMENT](./insert-and-duplicate-check/)
+- [AUTO_INCREMENT の永続化 — 再起動で採番が戻らなくなった経緯](./auto-increment/)
 - [デッドロック検出 — 背景スレッドが wait-for graph を見る](./deadlock-detection/)
 - [lock_sys — 512 シャードと latching](./lock-sys-sharding/)
 - [コミットとロールバックの内部 — InnoDB 側で何が確定するか](./commit-and-rollback-internals/)
+- [XA とセーブポイント — 部分ロールバックと分散トランザクション](./xa-and-savepoint/)
 
 InnoDB — 耐久性:
 
 - [redo ログ — mtr から #ib_redo ファイルまで](./redo-log-walkthrough/)
 - [mini-transaction — ページ変更と redo レコードの原子単位](./mini-transaction/)
+- [redo を書かない経路 — 一括ロードと ALTER INSTANCE DISABLE INNODB REDO_LOG](./redo-disabled-paths/)
 - [log writer / flusher — lock-free なログバッファと 4 スレッド](./log-writer-threads/)
 - [チェックポイント — 「ここまでは書けている」LSN](./checkpoint/)
 - [doublewrite — torn page への保険](./doublewrite/)
@@ -214,8 +224,10 @@ InnoDB — 背景スレッド:
 
 - [InnoDB のスレッド一覧 — 誰が何をいつ動かすか](./innodb-threads-walkthrough/)
 - [purge — 誰にも見えなくなった版を消す](./purge/)
+- [undo テーブルスペースと truncate — 膨らんだ undo をどう返すか](./undo-tablespaces-and-truncate/)
 - [change buffer — 8.4 で既定 OFF になった機構](./change-buffer/)
 - [adaptive hash index — B+tree 探索を省くハッシュ](./adaptive-hash-index/)
+- [辞書キャッシュ — InnoDB がテーブル定義を握り続ける場所](./dict-cache/)
 - [統計と INNODB_METRICS — persistent stats と I_S](./innodb-stats-and-metrics/)
 
 DDL:

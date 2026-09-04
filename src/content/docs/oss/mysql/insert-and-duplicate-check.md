@@ -3,7 +3,7 @@ title: "INSERT のロック — insert intention、重複検査、AUTO_INCREMENT
 description: "INSERT は普段ロック構造体を作らない。挿入した行は DB_TRX_ID が暗黙ロックになり、insert intention lock は「待たされるときだけ」作られる。ところが UNIQUE 制約があると話が変わり、重複検査が分離レベルに関係なく next-key lock を取る。ここから INSERT 同士のデッドロックが生まれる。AUTO_INCREMENT については 8.4 既定の innodb_autoinc_lock_mode=2 が何を捨てて何を得たかを読む。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 73
+  order: 80
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [RR と RC の違い](./locking-in-rr-vs-rc/)

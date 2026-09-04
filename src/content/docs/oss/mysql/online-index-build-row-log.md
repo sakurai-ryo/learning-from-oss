@@ -3,7 +3,7 @@ title: "INPLACE と row log — インデックスを作りながら DML を受�
 description: "online DDL の中核は `row_log_t` という追記専用のバッファだ。インデックスが ONLINE_INDEX_CREATION の間、DML はそのインデックスを直接更新せず row log に書き、構築の最後にまとめて適用する。適用は index の X ラッチの下で行われ、MDL の排他はさらにその後だ。ログの上限を超えると索引が corrupt 扱いになり ERROR 1799 が返る。innodb_ddl_threads と innodb_sort_buffer_size の役割の違いまで。"
 group: "DDL"
 sidebar:
-  order: 92
+  order: 104
 ---
 
 > **前提**: [ALGORITHM と LOCK の決定](./alter-algorithm-selection/) / [セカンダリインデックス](./secondary-index/)

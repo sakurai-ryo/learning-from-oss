@@ -3,7 +3,7 @@ title: "adaptive hash index — B+tree 探索を省くハッシュ"
 description: "同じキー前置で何度も引かれるページを見つけると、InnoDB はレコードへのポインタをハッシュ表に載せて根から葉までの降下を省く。8 分割されているが、分割キーは (space_id, index_id) のハッシュなので 1 本のホットなインデックスは 1 パーティションに固定される。change buffer と同様、8.4 では innodb_adaptive_hash_index の既定が OFF になっている。ヘルプ文だけが enabled by default のまま残っているのも含めて確かめる。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 86
+  order: 97
 ---
 
 > **前提**: [B+tree の操作](./btree-operations/) / [バッファプール](./buffer-pool-walkthrough/)

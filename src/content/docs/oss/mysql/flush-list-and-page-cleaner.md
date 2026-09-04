@@ -3,7 +3,7 @@ title: "flush list と page cleaner — dirty page はいつ書かれるか"
 description: "UPDATE がバッファプール上のページを書き換えても、そのページはすぐにはディスクへ行かない。flush list に oldest_modification 順で並び、page cleaner という専任スレッド群が「redo の消費速度」と「dirty page の割合」の 2 つから毎秒の書き出し枚数を決めて流していく。8.4 の adaptive flushing の実体は set_flush_target_by_lsn で、innodb_io_capacity_max の 2 倍が 1 回の上限になる。"
 group: "InnoDB — バッファプール"
 sidebar:
-  order: 65
+  order: 68
 ---
 
 > **前提**: [バッファプール](./buffer-pool-walkthrough/) / [WAL](./wal-and-recovery-basics/)
