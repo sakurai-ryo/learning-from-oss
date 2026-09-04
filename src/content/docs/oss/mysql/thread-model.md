@@ -43,6 +43,14 @@ flowchart TD
     DC -.->|"commit で待つ"| LW
 ```
 
+## なぜそうなっているか
+
+**1 接続 1 スレッドは、C10K 以前の設計を引きずっているというより、SQL の実行モデルと相性がよいから残っている。** 1 本のクエリの実行は深い再帰と大きなスタック上の状態 (パーサの状態、`Item` ツリー、iterator の木) を持つ。これをイベントループで扱おうとすると、全部をヒープ上の状態機械に書き換える必要がある。実際、後から作られた X Plugin ですらこのモデルを捨てていない。X はイベントループを持つが、**そこに登録されるのは listen ソケットとタイマーだけ**で、確立済みの接続はワーカースレッドが `Client::run` のループで抱え込む ([X Plugin のスレッドのページ](./x-plugin-threading-and-pipelining/))。classic との違いは、スレッドの供給が固定サイズの thread cache ではなく動的プールである点だけだ。
+
+**pthread だけ再利用して `THD` を作り直すのは、`THD` に残る状態が多すぎるからだ。** `THD` にはセッション変数、一時テーブル、prepared statement、トランザクション状態、診断領域が全部ぶら下がっている。これを接続をまたいで安全にリセットするより、丸ごと捨てて作り直すほうが確実で、実際に高いのは `THD` の生成ではなく pthread の生成 (スタック確保) のほうだ、という判断になる。
+
+**InnoDB の背景スレッドが役割ごとに固定本数で分かれているのは、それぞれ「待つ相手」が違うからだ。** log writer はログバッファの詰め替えを待ち、log flusher は `fsync` を待ち、page cleaner は I/O capacity を待ち、purge は read view を待つ。これらを 1 本のスレッドで回すと、`fsync` の待ちが purge を止める、といった無関係な結合が生まれる。8.0 で log 系が 4 本に分かれたのも、書き込みと `fsync` と「終わったことの通知」を分離するためだった ([log writer のページ](./log-writer-threads/))。
+
 ## ソースコードのどこか
 
 ### 接続スレッド — `handle_connection`
@@ -123,14 +131,6 @@ flowchart TD
 ### 接続数の上限は「+1」される
 
 [`sql/conn_handler/connection_handler_manager.cc#L104`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/conn_handler/connection_handler_manager.cc#L104) の `check_and_incr_conn_count` は `max_connections + 1` まで通す。この 1 本は `SUPER` / `CONNECTION_ADMIN` を持つユーザのための予約枠で、**認証が終わって権限が分かった時点で**「予約枠を使ってよい接続だったか」が判定される。詳細は[接続層のページ](./connection-layer/)。
-
-## なぜそうなっているか
-
-**1 接続 1 スレッドは、C10K 以前の設計を引きずっているというより、SQL の実行モデルと相性がよいから残っている。** 1 本のクエリの実行は深い再帰と大きなスタック上の状態 (パーサの状態、`Item` ツリー、iterator の木) を持つ。これをイベントループで扱おうとすると、全部をヒープ上の状態機械に書き換える必要がある。実際、後から作られた X Plugin ですらこのモデルを捨てていない。X はイベントループを持つが、**そこに登録されるのは listen ソケットとタイマーだけ**で、確立済みの接続はワーカースレッドが `Client::run` のループで抱え込む ([X Plugin のスレッドのページ](./x-plugin-threading-and-pipelining/))。classic との違いは、スレッドの供給が固定サイズの thread cache ではなく動的プールである点だけだ。
-
-**pthread だけ再利用して `THD` を作り直すのは、`THD` に残る状態が多すぎるからだ。** `THD` にはセッション変数、一時テーブル、prepared statement、トランザクション状態、診断領域が全部ぶら下がっている。これを接続をまたいで安全にリセットするより、丸ごと捨てて作り直すほうが確実で、実際に高いのは `THD` の生成ではなく pthread の生成 (スタック確保) のほうだ、という判断になる。
-
-**InnoDB の背景スレッドが役割ごとに固定本数で分かれているのは、それぞれ「待つ相手」が違うからだ。** log writer はログバッファの詰め替えを待ち、log flusher は `fsync` を待ち、page cleaner は I/O capacity を待ち、purge は read view を待つ。これらを 1 本のスレッドで回すと、`fsync` の待ちが purge を止める、といった無関係な結合が生まれる。8.0 で log 系が 4 本に分かれたのも、書き込みと `fsync` と「終わったことの通知」を分離するためだった ([log writer のページ](./log-writer-threads/))。
 
 ## どう活かすか
 

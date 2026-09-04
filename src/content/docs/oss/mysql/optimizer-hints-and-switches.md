@@ -6,6 +6,8 @@ sidebar:
   order: 32
 ---
 
+> **前提**: [アクセスパスの選択](./access-path-selection/) / [join 順序](./join-order-search/)
+
 ## 何を学んだか
 
 オプティマイザに口出しする手段は 3 系統あり、**別々のコード経路を通る**。
@@ -35,6 +37,16 @@ bool hint_table_state(const THD *thd, const Table_ref *table_list,
 **ヒントが指定されていればヒントの値、無ければスイッチの値。** 優先関係はこの 4 行に集約されている。第 2 引数に `0` を渡す呼び出しもあり、その場合は「スイッチを見ずヒントだけを見る」という意味になる (`optimizer_switch_flag(0)` は常に false)。
 
 一方、古いインデックスヒントだけは合流しない。新旧が同居すると**新しいほうが古いほうを丸ごと無効にする**。
+
+## なぜそうなっているか
+
+**ヒントとスイッチを 1 本の関数で合流させたのは、優先順位を分散させないためだ。** 「ヒントがあればヒント、無ければスイッチ」というルールを 20 箇所以上のオプティマイザのコードそれぞれに書くと、必ずどこかで食い違う。`hint_table_state(thd, tl, XXX_HINT_ENUM, OPTIMIZER_SWITCH_XXX)` という 1 行に押し込めば、呼ぶ側は優先順位を知らなくてよくなる。第 2 引数に `0` を渡す抜け道があるのは、「スイッチが存在しないヒント」(`INDEX_MERGE`、`SKIP_SCAN` の強制など) のためだ。
+
+**新旧のインデックスヒントを混在させないのは、意味を合成できないからだ。** `USE INDEX (a) /*+ NO_INDEX(t a) */` のような組み合わせに一意な解釈を与えるのは難しい。「新しいほうがあれば古いほうを完全に無視する」という乱暴な規則は、少なくとも予測可能である。同じ理由で `USE INDEX` と `FORCE INDEX` の混在は `ER_WRONG_USAGE` で弾かれる。
+
+**新構文に `USE INDEX` 相当がないのは、`USE INDEX` の意味が弱すぎたからだろう。** 「候補を絞るがフルスキャンは残す」は、指定した意図 (このインデックスを使ってほしい) を満たさないことが多い。新構文は `INDEX` = force に倒し、代わりに用途別 (`JOIN_INDEX` / `GROUP_INDEX` / `ORDER_INDEX`) の粒度を足した。
+
+**`batched_key_access` が既定 off なのは、DS-MRR に依存していて条件が厳しいからだ。** BKA は「キーをまとめてバッファに溜め、MRR でソートしてから読む」join なので、MRR が選ばれない状況では意味がない。そして `mrr_cost_based=on` の既定では MRR がほとんど選ばれない ([アクセスパスの選択](./access-path-selection/))。両方を同時に切り替えないと効かないものを既定 on にはできない。
 
 ## ソースコードのどこか
 
@@ -286,16 +298,6 @@ void Sys_var_hint::update_vars(THD *thd) {
 同じ変数を 2 回指定すると、2 つ目は `ER_WARN_CONFLICTING_HINT` の警告を出して捨てられる ([`add_var` L756](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_hints.cc#L756))。
 
 `SET_VAR` で指定できるのは、`sys_vars.cc` で `HINT_UPDATEABLE` が付いたセッション変数だけだ。`optimizer_switch`、`optimizer_search_depth`、`optimizer_prune_level`、`join_buffer_size`、`eq_range_index_dive_limit`、`range_optimizer_max_mem_size` などが該当する。
-
-## なぜそうなっているか
-
-**ヒントとスイッチを 1 本の関数で合流させたのは、優先順位を分散させないためだ。** 「ヒントがあればヒント、無ければスイッチ」というルールを 20 箇所以上のオプティマイザのコードそれぞれに書くと、必ずどこかで食い違う。`hint_table_state(thd, tl, XXX_HINT_ENUM, OPTIMIZER_SWITCH_XXX)` という 1 行に押し込めば、呼ぶ側は優先順位を知らなくてよくなる。第 2 引数に `0` を渡す抜け道があるのは、「スイッチが存在しないヒント」(`INDEX_MERGE`、`SKIP_SCAN` の強制など) のためだ。
-
-**新旧のインデックスヒントを混在させないのは、意味を合成できないからだ。** `USE INDEX (a) /*+ NO_INDEX(t a) */` のような組み合わせに一意な解釈を与えるのは難しい。「新しいほうがあれば古いほうを完全に無視する」という乱暴な規則は、少なくとも予測可能である。同じ理由で `USE INDEX` と `FORCE INDEX` の混在は `ER_WRONG_USAGE` で弾かれる。
-
-**新構文に `USE INDEX` 相当がないのは、`USE INDEX` の意味が弱すぎたからだろう。** 「候補を絞るがフルスキャンは残す」は、指定した意図 (このインデックスを使ってほしい) を満たさないことが多い。新構文は `INDEX` = force に倒し、代わりに用途別 (`JOIN_INDEX` / `GROUP_INDEX` / `ORDER_INDEX`) の粒度を足した。
-
-**`batched_key_access` が既定 off なのは、DS-MRR に依存していて条件が厳しいからだ。** BKA は「キーをまとめてバッファに溜め、MRR でソートしてから読む」join なので、MRR が選ばれない状況では意味がない。そして `mrr_cost_based=on` の既定では MRR がほとんど選ばれない ([アクセスパスの選択](./access-path-selection/))。両方を同時に切り替えないと効かないものを既定 on にはできない。
 
 ## どう活かすか
 

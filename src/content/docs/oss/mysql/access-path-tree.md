@@ -6,6 +6,8 @@ sidebar:
   order: 33
 ---
 
+> **前提**: [JOIN::optimize](./optimizer-walkthrough/) / [アクセスパスの選択](./access-path-selection/)
+
 ## 何を学んだか
 
 **オプティマイザの出力は `AccessPath` の木という 1 つのデータ構造である。** これがこの章の要になる事実だ。
@@ -41,7 +43,19 @@ sidebar:
 
 3 つの設計判断が読み取れる。**iterator と 1:1**、**固定サイズの variant (継承ではない)**、**その場で差し替えられる**。最後のものが hypergraph オプティマイザの都合で、探索中に「より良いパスが見つかったら上書きする」ためにヒープ確保を伴わない構造が要る。
 
+## なぜそうなっているか
+
+**継承ではなく固定サイズの variant にしたのは、探索中に上書きしたいからだ。** hypergraph オプティマイザは同じ部分問題に対して何十ものアクセスパスを作り、Pareto フロンティア上のものだけ残す。継承ベースだと「良いものが見つかったから差し替える」たびにヒープ確保と解放が要る。固定サイズなら `*path = better_path;` で済む。次節で引用する doc comment がこの理由を明記している。
+
+**iterator と 1:1 にしたのは、変換を機械的にするためだ。** もし AccessPath が「論理的な操作」を表していたら、iterator への変換に判断が入り、EXPLAIN の出力と実際の実行がずれうる。1:1 なら変換は `switch` の羅列になり、**EXPLAIN FORMAT=TREE が印字した木が実行される木そのもの**になる。`EXPLAIN` が信用できるのはこの性質による。
+
+**2 つのオプティマイザが同じ型を出すことにしたのは、エグゼキュータを 1 つに保つためだ。** hypergraph オプティマイザは join 順序探索を全面的に書き換えたが、実行側は 1 行も変えていない。`JOIN::optimize` の中の 1 箇所の分岐と、`m_root_access_path` への代入だけで共存できている。新しいオプティマイザを production に入れる前に、実行側で先に検証できる、という順序の恩恵もある。
+
+**union のアクセスを accessor に限定したのは、`type` との整合を型で守れないからだ。** C++17 の `std::variant` があれば型で守れたが、当時使えなかった。次善策として「assert 付きの accessor 経由に限る」を選び、コメントで `It is private to force all access to be through the type-checking accessors` と宣言している。
+
 ## ソースコードのどこか
+
+ここから確かめるのは 3 点。**ノードが 46 種類あること、それが 1 つの固定サイズの構造体に収まっていること、`RowIterator` と 1:1 で対応していること**。上で書いた設計判断が、そのままこの 3 つの形で現れる。
 
 ### 46 種類のノード
 
@@ -270,16 +284,6 @@ iterator には要らないが探索には要る情報も、同じ構造体に�
 `safe_for_rowid` (`SAFE` / `SAFE_IF_SCANNED_ONCE` / `UNSAFE`) は、ソート用に行 ID を取れるかを表す。マテリアライズし直される派生表は `SAFE_IF_SCANNED_ONCE` で、これは [filesort](./filesort/) が rowid ソートを選べるかに効く。
 
 `immediate_update_delete_table` は UPDATE / DELETE で「読みながらその場で更新できるテーブル」の索引で、コメントが 40 行ほど「なぜハッシュ join ではできないのか」を説明している。
-
-## なぜそうなっているか
-
-**継承ではなく固定サイズの variant にしたのは、探索中に上書きしたいからだ。** hypergraph オプティマイザは同じ部分問題に対して何十ものアクセスパスを作り、Pareto フロンティア上のものだけ残す。継承ベースだと「良いものが見つかったから差し替える」たびにヒープ確保と解放が要る。固定サイズなら `*path = better_path;` で済む。doc comment がこの理由を明記している。
-
-**iterator と 1:1 にしたのは、変換を機械的にするためだ。** もし AccessPath が「論理的な操作」を表していたら、iterator への変換に判断が入り、EXPLAIN の出力と実際の実行がずれうる。1:1 なら変換は `switch` の羅列になり、**EXPLAIN FORMAT=TREE が印字した木が実行される木そのもの**になる。`EXPLAIN` が信用できるのはこの性質による。
-
-**2 つのオプティマイザが同じ型を出すことにしたのは、エグゼキュータを 1 つに保つためだ。** hypergraph オプティマイザは join 順序探索を全面的に書き換えたが、実行側は 1 行も変えていない。`JOIN::optimize` の中の 1 箇所の分岐と、`m_root_access_path` への代入だけで共存できている。新しいオプティマイザを production に入れる前に、実行側で先に検証できる、という順序の恩恵もある。
-
-**union のアクセスを accessor に限定したのは、`type` との整合を型で守れないからだ。** C++17 の `std::variant` があれば型で守れたが、当時使えなかった。次善策として「assert 付きの accessor 経由に限る」を選び、コメントで `It is private to force all access to be through the type-checking accessors` と宣言している。
 
 ## どう活かすか
 

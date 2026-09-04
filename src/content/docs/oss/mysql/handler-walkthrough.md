@@ -6,6 +6,8 @@ sidebar:
   order: 41
 ---
 
+> **前提**: [pluggable storage engine](./pluggable-storage-engine/) / [iterator executor](./executor-walkthrough/)
+
 ## この層の責務
 
 [SELECT の一生](./life-of-a-select/)で見たとおり、iterator の葉は最後に `handler` のメソッドを呼ぶ。この層の責務は 1 つに絞られる。

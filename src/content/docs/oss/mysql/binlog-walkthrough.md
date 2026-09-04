@@ -6,6 +6,8 @@ sidebar:
   order: 84
 ---
 
+> **前提**: [UPDATE の一生](./life-of-an-update/) / [トランザクションの調停](./transaction-coordination/)
+
 ## この層の責務
 
 [UPDATE の一生](./life-of-an-update/)の最後に出てきた `tc_log->prepare` → `ordered_commit` → `ha_commit_low` の 3 段が、この層の全体像だ。`tc_log` の実体は `MYSQL_BIN_LOG` で、binlog は「ログファイル」であると同時に **2 相コミットのトランザクションコーディネータ**でもある。

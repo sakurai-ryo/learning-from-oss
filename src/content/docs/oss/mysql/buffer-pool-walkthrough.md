@@ -6,6 +6,8 @@ sidebar:
   order: 53
 ---
 
+> **前提**: [ページとバッファ](./page-and-buffer/) / [物理構造](./innodb-physical-walkthrough/)
+
 ## この層の責務
 
 バッファプールの仕事は 1 行で書ける。**`(space_id, page_no)` を、メモリ上の 16KB のバイト列と、それを触ってよいという latch に変換する**。

@@ -6,6 +6,8 @@ sidebar:
   order: 62
 ---
 
+> **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [分離レベルとアノマリ](./isolation-levels-and-anomalies/)
+
 ## 何を学んだか
 
 この章の他のページはすべて REPEATABLE READ (InnoDB の既定) を基準に書いている。このページはその差分だけを扱う。
@@ -45,6 +47,18 @@ sidebar:
 7. STATEMENT ベースの binlog が使えなくなる
 
 そして**変わらない**ものもある。UNIQUE 制約の重複検査は RC でも next-key lock を取るし、insert intention は分離レベルに関係なく取る。
+
+## なぜそうなっているか
+
+**RR がギャップロックを取るのは、ファントムを防ぐためだ。** `SELECT ... WHERE x BETWEEN 10 AND 20 FOR UPDATE` を 2 回実行して同じ結果を得るには、10〜20 の範囲に他人が挿入できてはいけない。「その範囲に何も挿入させない」を表現するのがギャップロックで、[ロックのページ](./lock-modes-and-types/)の互換表が示すとおり、**ギャップロックの唯一の効果は insert intention をブロックすること**だ。
+
+**RC がギャップを捨てられるのは、ファントムを防がないと決めたからだ。** SQL 標準の READ COMMITTED はファントムを許す。だから範囲を守る必要がなく、レコードだけを押さえれば足りる。並行性は上がり、デッドロックの機会は減る。
+
+**それでも重複検査で next-key を取るのは、UNIQUE 制約が分離レベルより強い保証だからだ。** 「重複がない」はどの分離レベルでも守られなければならない。重複値のレコードとその周辺のギャップを押さえないと、2 つのトランザクションが同時に同じ値を挿入できてしまう。**UNIQUE 制約はファントムを許さない**ので、RC でもギャップが必要になる。
+
+**semi-consistent read が RC 限定なのは、read view を無視するからだ。** 「最後にコミットされた版」を読むのは、RC の「文ごとにスナップショットを取り直す」という性質と整合する。RR でこれをやると、同じトランザクションの中で見えるデータが飛ぶ。だから `allow_semi_consistent()` が `skip_gap_locks()` と同義になっている。
+
+**PREPARE でギャップロックだけ先に解放するのは、2 相コミットの待ち時間を短くするためだ。** PREPARE と COMMIT の間には binlog の書き込みと `fsync` が挟まる ([2PC のページ](./two-phase-commit-and-group-commit/))。その間ギャップロックを持ち続けると、他のセッションの INSERT が止まる。レコードロックは可視性のために最後まで要るが、ギャップロックは「挿入を止める」だけなので、RC なら早く手放してよい。
 
 ## ソースコードのどこか
 
@@ -273,18 +287,6 @@ void ha_innobase::try_semi_consistent_read(bool yes) {
 ```
 
 [`row_ins_check_foreign_constraint` (L1415)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/row/row0ins.cc#L1415) の中、[L1449](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/row/row0ins.cc#L1449)。ここだけは `trx->skip_gap_locks()` を使わず `isolation_level` を直接見ている。
-
-## なぜそうなっているか
-
-**RR がギャップロックを取るのは、ファントムを防ぐためだ。** `SELECT ... WHERE x BETWEEN 10 AND 20 FOR UPDATE` を 2 回実行して同じ結果を得るには、10〜20 の範囲に他人が挿入できてはいけない。「その範囲に何も挿入させない」を表現するのがギャップロックで、[ロックのページ](./lock-modes-and-types/)の互換表が示すとおり、**ギャップロックの唯一の効果は insert intention をブロックすること**だ。
-
-**RC がギャップを捨てられるのは、ファントムを防がないと決めたからだ。** SQL 標準の READ COMMITTED はファントムを許す。だから範囲を守る必要がなく、レコードだけを押さえれば足りる。並行性は上がり、デッドロックの機会は減る。
-
-**それでも重複検査で next-key を取るのは、UNIQUE 制約が分離レベルより強い保証だからだ。** 「重複がない」はどの分離レベルでも守られなければならない。重複値のレコードとその周辺のギャップを押さえないと、2 つのトランザクションが同時に同じ値を挿入できてしまう。**UNIQUE 制約はファントムを許さない**ので、RC でもギャップが必要になる。
-
-**semi-consistent read が RC 限定なのは、read view を無視するからだ。** 「最後にコミットされた版」を読むのは、RC の「文ごとにスナップショットを取り直す」という性質と整合する。RR でこれをやると、同じトランザクションの中で見えるデータが飛ぶ。だから `allow_semi_consistent()` が `skip_gap_locks()` と同義になっている。
-
-**PREPARE でギャップロックだけ先に解放するのは、2 相コミットの待ち時間を短くするためだ。** PREPARE と COMMIT の間には binlog の書き込みと `fsync` が挟まる ([2PC のページ](./two-phase-commit-and-group-commit/))。その間ギャップロックを持ち続けると、他のセッションの INSERT が止まる。レコードロックは可視性のために最後まで要るが、ギャップロックは「挿入を止める」だけなので、RC なら早く手放してよい。
 
 ## どう活かすか
 

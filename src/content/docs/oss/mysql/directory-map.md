@@ -6,11 +6,19 @@ sidebar:
   order: 9
 ---
 
+> **前提**: [pluggable storage engine](./pluggable-storage-engine/)
+
 ## 何を学んだか
 
 このツリーで迷わないための地図を先に置く。**`sql/` が SQL 層、`storage/innobase/` がストレージエンジンで、両者は [`sql/handler.h`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/handler.h) の `class handler` だけで繋がっている。** この境界の意味は[handler のページ](./handler-walkthrough/)で扱う。
 
 もうひとつ知っておくべきなのは、**このツリーには「異常に大きいファイル」がいくつかあり、そこに機能が集中している**ことだ。`ha_innodb.cc` は 24437 行あって、InnoDB が SQL 層に見せる顔がほぼ全部ここに集まっている。grep して 1 ファイルに数十ヒットしたとき、それが 24000 行のファイルなのか 400 行のファイルなのかで読み方が変わる。
+
+## なぜそうなっているか
+
+**`sql/` が平地に近いのは、モジュール境界が後から引かれたからだ。** `sql/range_optimizer/`、`sql/join_optimizer/`、`sql/iterators/` はどれも 8.0 系で既存の巨大ファイルから切り出されたもので、`sql/opt_range.cc` が消えたのはその副作用だ。逆に `sql_table.cc` (20072 行) や `ha_innodb.cc` (24437 行) は切り出しが進んでいない部分で、**「切り出されているか」がそのモジュールに近年手が入ったかの指標になる**。
+
+**InnoDB の `<モジュール><番号>` 命名は、C 時代の名前空間の代用だ。** `btr_cur_search_to_nth_level` のように関数名にもモジュール名が前置されていて、これは C++ の名前空間が使えなかった時代の慣習がそのまま残っている。8.4 でも [`btr_cur_search_to_nth_level`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L620) は free function のままで、メソッド化されたのは `btr_pcur_t` のような一部の型だけだ。
 
 ## ソースコードのどこか
 
@@ -88,12 +96,6 @@ InnoDB のファイル名は `<モジュール><番号><名前>.cc` という古
 | `trx0`          | トランザクション                   | `trx0trx.cc`、`trx0undo.cc`、`trx0rec.cc`、`trx0purge.cc`、`trx0sys.cc`                                             |
 
 **ヘッダの置き場所に例外がある。** InnoDB のヘッダは基本的に `storage/innobase/include/` にあるが、**レコードヘッダの定数だけは `storage/innobase/rem/rec.h`** というモジュール内 private ヘッダにある。`REC_INFO_DELETED_FLAG` を `include/` で grep しても出ない ([レコード構造のページ](./record-format/))。
-
-## なぜそうなっているか
-
-**`sql/` が平地に近いのは、モジュール境界が後から引かれたからだ。** `sql/range_optimizer/`、`sql/join_optimizer/`、`sql/iterators/` はどれも 8.0 系で既存の巨大ファイルから切り出されたもので、`sql/opt_range.cc` が消えたのはその副作用だ。逆に `sql_table.cc` (20072 行) や `ha_innodb.cc` (24437 行) は切り出しが進んでいない部分で、**「切り出されているか」がそのモジュールに近年手が入ったかの指標になる**。
-
-**InnoDB の `<モジュール><番号>` 命名は、C 時代の名前空間の代用だ。** `btr_cur_search_to_nth_level` のように関数名にもモジュール名が前置されていて、これは C++ の名前空間が使えなかった時代の慣習がそのまま残っている。8.4 でも [`btr_cur_search_to_nth_level`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L620) は free function のままで、メソッド化されたのは `btr_pcur_t` のような一部の型だけだ。
 
 ## どう活かすか
 

@@ -6,6 +6,8 @@ sidebar:
   order: 38
 ---
 
+> **前提**: [iterator executor](./executor-walkthrough/) / [ORDER BY / GROUP BY](./sort-avoidance-and-ordering/)
+
 ## 何を学んだか
 
 `ORDER BY` をインデックスで満たせなかったとき、オプティマイザは `AccessPath::SORT` を置き、実行器は `SortingIterator` を作る ([ORDER BY / GROUP BY のページ](./sort-avoidance-and-ordering/))。EXPLAIN の `Using filesort` ([`opt_explain_traditional.cc#L50`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain_traditional.cc#L50)) がこれだ。
@@ -16,6 +18,18 @@ sidebar:
 2. **溢れたら「7 本ずつマージして 15 本以下にする」。** `MERGEBUFF = 7` と `MERGEBUFF2 = 15` という 2 つの定数がその閾値で、実装は `sql/merge_many_buff.h` という header-only の template 1 つに収まっている
 3. **`Sort_merge_passes` はマージ 1 回ぶんを数える。** 「ソートが何回ディスクを使ったか」ではない
 4. **行全体を運ぶか行 ID だけ運ぶかの分岐 (addon fields / rowid sort) は残っているが、それを制御していた `max_length_for_sort_data` は 8.4 では無効だ**
+
+## なぜそうなっているか
+
+**7 と 15 という数字は、ファイルディスクリプタと読み込みバッファの折衷だ。** N 本同時にマージすると、各チャンクの先読みバッファをソートバッファの 1/N ずつしか取れない。N を大きくすればラウンド数は減るが 1 本あたりの読み込みが細切れになる。7 という小さい数はディスクがシークに弱かった時代の選択で、その後も定数のまま残っている。`MERGEBUFF2 = 15` は「最終マージは 15 本までなら 1 回で済ませる」という許容幅だ。
+
+**`merge_many_buff` が template なのは、filesort 以外からも使うためだ。** `Merge_param` に `Sort_param` 以外を渡せる。`sql/uniques` 系のコードが同じマージを使い回す。header-only なのはそのためで、テンプレートの実体化を各利用側に任せている。
+
+**addon fields をコストで切り替えるのをやめたのは、rowid sort のランダム I/O が現代のワークロードでほぼ常に負けるからだ。** バッファプールに載っていれば行 ID 経由の再取得は安いが、載っていなければ 1 行ごとにランダム読みになる。行そのものをソートバッファに入れるほうがバッファは太るが、シーケンシャルに扱える。この判断が固定されたので `max_length_for_sort_data` の存在意義がなくなった。
+
+**`SortingIterator::Init()` でソートを完了させるのは、pull 型の中に「全行を見ないと 1 行目が決まらない」演算を埋め込む唯一の方法だからだ。** `Read()` の契約は 1 行ずつ返すことなので、ソートは `Init()` 側に押し込むしかない。同じ構造を `MaterializeIterator` も取っている ([内部一時表のページ](./materialization-and-temptable/))。
+
+**優先度キューが「全部読んでから n 件取る」より速いのは、バッファが n 件ぶんで足りるからだ。** 100 万行から上位 10 件を取るのに、10 件ぶんのヒープしか持たない。`sort_buffer_size` に収まりやすいので、一時ファイルを開かずに済む。ただし `LIMIT` が大きいと PQ 自体がバッファに入らず、`check_if_pq_applicable` が false を返して通常経路に落ちる。
 
 ## ソースコードのどこか
 
@@ -244,18 +258,6 @@ bool merge_many_buff(THD *thd, Merge_param *param, Sort_buffer sort_buffer,
 ```
 
 packed addon fields (可変長の詰め込み) は PQ と併用できない。トレードオフがここに現れている。
-
-## なぜそうなっているか
-
-**7 と 15 という数字は、ファイルディスクリプタと読み込みバッファの折衷だ。** N 本同時にマージすると、各チャンクの先読みバッファをソートバッファの 1/N ずつしか取れない。N を大きくすればラウンド数は減るが 1 本あたりの読み込みが細切れになる。7 という小さい数はディスクがシークに弱かった時代の選択で、その後も定数のまま残っている。`MERGEBUFF2 = 15` は「最終マージは 15 本までなら 1 回で済ませる」という許容幅だ。
-
-**`merge_many_buff` が template なのは、filesort 以外からも使うためだ。** `Merge_param` に `Sort_param` 以外を渡せる。`sql/uniques` 系のコードが同じマージを使い回す。header-only なのはそのためで、テンプレートの実体化を各利用側に任せている。
-
-**addon fields をコストで切り替えるのをやめたのは、rowid sort のランダム I/O が現代のワークロードでほぼ常に負けるからだ。** バッファプールに載っていれば行 ID 経由の再取得は安いが、載っていなければ 1 行ごとにランダム読みになる。行そのものをソートバッファに入れるほうがバッファは太るが、シーケンシャルに扱える。この判断が固定されたので `max_length_for_sort_data` の存在意義がなくなった。
-
-**`SortingIterator::Init()` でソートを完了させるのは、pull 型の中に「全行を見ないと 1 行目が決まらない」演算を埋め込む唯一の方法だからだ。** `Read()` の契約は 1 行ずつ返すことなので、ソートは `Init()` 側に押し込むしかない。同じ構造を `MaterializeIterator` も取っている ([内部一時表のページ](./materialization-and-temptable/))。
-
-**優先度キューが「全部読んでから n 件取る」より速いのは、バッファが n 件ぶんで足りるからだ。** 100 万行から上位 10 件を取るのに、10 件ぶんのヒープしか持たない。`sort_buffer_size` に収まりやすいので、一時ファイルを開かずに済む。ただし `LIMIT` が大きいと PQ 自体がバッファに入らず、`check_if_pq_applicable` が false を返して通常経路に落ちる。
 
 ## どう活かすか
 

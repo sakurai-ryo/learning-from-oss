@@ -6,6 +6,8 @@ sidebar:
   order: 19
 ---
 
+> **前提**: [X Protocol](./x-protocol-messages/) / [接続層](./connection-layer/)
+
 ## この層の責務
 
 X Plugin がやることは、実は 3 つしかない。

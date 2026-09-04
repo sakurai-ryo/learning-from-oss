@@ -6,6 +6,8 @@ sidebar:
   order: 43
 ---
 
+> **前提**: [handler](./handler-walkthrough/)
+
 ## 何を学んだか
 
 MySQL 5.7 までのメタデータは、`.frm` (テーブル定義)、`.par` (パーティション定義)、`db.opt` (スキーマのデフォルト文字セット)、`mysql.proc` などの MyISAM テーブルにバラバラに置かれていた。DDL の途中でクラッシュすると、`.frm` は書けたが InnoDB のテーブルスペースは作られていない、といった不整合が起きた。
@@ -18,6 +20,16 @@ MySQL 5.7 までのメタデータは、`.frm` (テーブル定義)、`.par` (�
 4. **`INFORMATION_SCHEMA` のテーブルは DD 上の SQL ビューになった。** `I_S.TABLES` は `mysql.tables` を `mysql.schemata` と JOIN するビューで、その `CREATE VIEW` 文は C++ のコードが組み立てて bootstrap 時に実行する
 
 「オプティマイザが I_S を最適化できるようになった」も「`FLUSH TABLES` の意味が変わった」も、この 4 点から出てくる。
+
+## なぜそうなっているか
+
+**DD を InnoDB のテーブルにしたのは、DDL をアトミックにする以外に方法がなかったからだ。** `.frm` はただのファイルで、書き込みと InnoDB のテーブルスペース作成を 1 つの原子操作にする手段がない。同じトランザクションの中に入れてしまえば、redo と undo がそのまま使える。`CREATE TABLE` の途中でクラッシュしても、DD の行が入っていなければテーブルは存在しなかったことになる ([アトミック DDL のページ](./atomic-ddl-and-ddl-log/))。
+
+**`Dictionary_client` が uncommitted レジストリを持つのは、DDL 実行中のセッション自身が新しい定義を読む必要があるからだ。** `ALTER TABLE` は列を足した後の定義を使って行を組み立て直す。だが同じ定義を他セッションに見せてはいけない。**InnoDB の MVCC は `mysql.tables` の行の可視性は解決するが、そこから組み立てた `dd::Table` オブジェクトのキャッシュまでは面倒を見ない**ので、キャッシュ層に同じ構造をもう 1 つ作ることになった。
+
+**`table_def_cache` と `table_open_cache` が別物なのは、共有できるものとできないものが違うからだ。** `TABLE_SHARE` は定義なので全接続で共有できる。`TABLE` は `record[0]` のバッファと `handler` インスタンスを持つので、接続ごとに要る ([handler のページ](./handler-walkthrough/))。だから前者の既定は 400、後者は 4000 と 1 桁違う。**同じテーブルを 100 接続が同時に開けば `TABLE` は 100 個できるが `TABLE_SHARE` は 1 個だ。**
+
+**I_S をビューにしたのは、オプティマイザに任せたかったからだ。** 5.7 では I_S へのクエリはサーバ内のループでテーブルを 1 つずつ開いて行を作っていた。`WHERE table_schema = 'app'` があっても全テーブルを開いてから捨てていた。ビューになったので、`mysql.schemata` に対する ref アクセスに落ちる。**`I_S.COLUMNS` を叩いたときの速度が 8.0 で桁違いに変わったのはこれが理由だ。**
 
 ## ソースコードのどこか
 
@@ -291,16 +303,6 @@ flowchart TD
 ```
 
 **`dd::execute_query` で本当に `CREATE VIEW` を流している。** 登録されているビューは `sql/dd/impl/system_registry.cc` の `register_view<X>()` が 44 個。`SHOW CREATE VIEW information_schema.TABLES` が実際に SQL を返すのはこのためだ。
-
-## なぜそうなっているか
-
-**DD を InnoDB のテーブルにしたのは、DDL をアトミックにする以外に方法がなかったからだ。** `.frm` はただのファイルで、書き込みと InnoDB のテーブルスペース作成を 1 つの原子操作にする手段がない。同じトランザクションの中に入れてしまえば、redo と undo がそのまま使える。`CREATE TABLE` の途中でクラッシュしても、DD の行が入っていなければテーブルは存在しなかったことになる ([アトミック DDL のページ](./atomic-ddl-and-ddl-log/))。
-
-**`Dictionary_client` が uncommitted レジストリを持つのは、DDL 実行中のセッション自身が新しい定義を読む必要があるからだ。** `ALTER TABLE` は列を足した後の定義を使って行を組み立て直す。だが同じ定義を他セッションに見せてはいけない。**InnoDB の MVCC は `mysql.tables` の行の可視性は解決するが、そこから組み立てた `dd::Table` オブジェクトのキャッシュまでは面倒を見ない**ので、キャッシュ層に同じ構造をもう 1 つ作ることになった。
-
-**`table_def_cache` と `table_open_cache` が別物なのは、共有できるものとできないものが違うからだ。** `TABLE_SHARE` は定義なので全接続で共有できる。`TABLE` は `record[0]` のバッファと `handler` インスタンスを持つので、接続ごとに要る ([handler のページ](./handler-walkthrough/))。だから前者の既定は 400、後者は 4000 と 1 桁違う。**同じテーブルを 100 接続が同時に開けば `TABLE` は 100 個できるが `TABLE_SHARE` は 1 個だ。**
-
-**I_S をビューにしたのは、オプティマイザに任せたかったからだ。** 5.7 では I_S へのクエリはサーバ内のループでテーブルを 1 つずつ開いて行を作っていた。`WHERE table_schema = 'app'` があっても全テーブルを開いてから捨てていた。ビューになったので、`mysql.schemata` に対する ref アクセスに落ちる。**`I_S.COLUMNS` を叩いたときの速度が 8.0 で桁違いに変わったのはこれが理由だ。**
 
 ## どう活かすか
 

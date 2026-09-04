@@ -6,6 +6,8 @@ sidebar:
   order: 21
 ---
 
+> **前提**: [SELECT の一生](./life-of-a-select/)
+
 ## この層の責務
 
 入口は [`dispatch_sql_command`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_parse.cc#L5275)、出口は `Query_block::prepare` が返った状態だ。この区間には最適化も実行も出てこない。やっているのは**バイト列を、オプティマイザが読める形に変えること**だけである。

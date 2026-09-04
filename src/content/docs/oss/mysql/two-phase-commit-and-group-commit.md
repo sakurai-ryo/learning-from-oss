@@ -6,6 +6,8 @@ sidebar:
   order: 86
 ---
 
+> **前提**: [binlog](./binlog-walkthrough/) / [redo ログ](./redo-log-walkthrough/)
+
 ## 何を学んだか
 
 `log_bin=ON` の InnoDB では、`COMMIT` は必ず 2 相コミットになる。参加者は InnoDB と binlog の 2 つで、調停者 (`TC_LOG`) は binlog 自身だ。順序は固定されている。
@@ -32,6 +34,41 @@ sidebar:
 ```
 
 `AFTER_COMMIT_STAGE` は **`after_commit` フックを `LOCK_commit` とは別の mutex で回すためだけに存在する**。`COMMIT_ORDER_FLUSH_STAGE` は binlog を持たないレプリカのアプライヤ専用で、`BINLOG_FLUSH_STAGE` と mutex を共有する。
+
+## なぜそうなっているか
+
+**2PC が「参加者 2 つ以上」で条件付けられているのは、コストが実測できるほど大きいからだ。** `ha_commit_trans` の `rw_ha_count > 1` がその判定で ([UPDATE の一生](./life-of-an-update/))、binlog を切ると prepare が丸ごと消える。ただし 8.4 では prepare 時点の `fsync` が `HA_IGNORE_DURABILITY` で抑止され、グループ単位の `ha_flush_logs(true)` に置き換わっているので、**同時実行が多い環境では 2PC の追加コストは「グループあたり 1 回の redo fsync」まで薄まる**。逆に同時実行が 1 のときはそのまま乗る。
+
+**ステージを分けたのは、直列化が必要な区間の長さがステージごとに違うからだ。** ファイルへの `write` は `LOCK_log`、`fsync` は `LOCK_sync`、エンジンへの `commit` は `LOCK_commit` と、別の資源には別の mutex を割り当てる。1 本の大きな mutex で全部を守ると、`fsync` している間はファイルへの `write` もできない。**3 本に割ることで、3 つのグループが 3 つのステージで同時に進める。**
+
+**`AFTER_COMMIT_STAGE` が独立している理由は、`after_commit` フックが外部プラグインのコードだからだ。** 半同期の `AFTER_COMMIT` wait point や Group Replication がここに入る。これを `LOCK_commit` を握ったまま呼ぶと、プラグインが待つ間ずっとエンジンへのコミットが止まる。**別の mutex に移すことで「エンジンのコミットは終わった、フックはまだ」という状態を作れる**ようにしている。
+
+**逆に `AFTER_SYNC` は `LOCK_commit` を持ったまま待つ。これは意図的だ。** wait point の説明文がそう書いている ([`semisync_source_plugin.cc#L303`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/plugin/semisync/semisync_source_plugin.cc#L303))。
+
+```cpp title="plugin/semisync/semisync_source_plugin.cc"
+    "has synced the binary log file (or would have synced, but may have "
+    "skipped it, when sync_binlog!=1), but before it has committed in the "
+    "engine on the source side. Therefore, it guarantees that no other "
+    "sessions on the source can see the effects of the transaction before "
+    "the replica has received it. "
+```
+
+「レプリカが受け取る前に source の他セッションから見えてはいけない」という保証を得るには、**エンジンのコミットを止めておくしかない**。その代償が「commit pipeline 全体が止まる」ことで、これは設計上避けられない。
+
+**`fetch_and_process_flush_stage_queue` が「キューを空にしてから `ha_flush_logs`」の順にしているのは、グループの境界を先に確定させるためだ。** 先に redo を落としてからキューを取ると、その間に並んだセッションの prepare が redo に落ちていないまま binlog に書かれうる。順序を逆にすれば、切り取ったリストの全員が確実に flush 済みになる。
+
+**`gtid_executed` の更新を commit ステージのリーダーがまとめてやるのは、`Gtid_set` を単一区間に保つためだ。**
+
+```cpp title="sql/binlog.cc"
+      If we allow each thread to call update_on_commit only when they
+      are at finish_commit, the GTID order cannot be guaranteed and
+      temporary gaps may appear in gtid_executed. When this happen,
+      the server would have to add and remove intervals from the
+      Gtid_set, and adding and removing intervals requires a mutex,
+      which would reduce performance.
+```
+
+順序を守ること自体が目的ではなく、**順序を守ったほうがデータ構造が軽い**という理由になっている ([GTID のページ](./gtid/))。
 
 ## ソースコードのどこか
 
@@ -276,41 +313,6 @@ binlog::Binlog_recovery &binlog::Binlog_recovery::recover() {
 ```
 
 通常運用ではチケットは 1 つのまま進み、事実上何もしない。**グループの境界を外部から明示的に区切りたい機能 (Group Replication やテスト) のためのフック**だと読める。
-
-## なぜそうなっているか
-
-**2PC が「参加者 2 つ以上」で条件付けられているのは、コストが実測できるほど大きいからだ。** `ha_commit_trans` の `rw_ha_count > 1` がその判定で ([UPDATE の一生](./life-of-an-update/))、binlog を切ると prepare が丸ごと消える。ただし 8.4 では prepare 時点の `fsync` が `HA_IGNORE_DURABILITY` で抑止され、グループ単位の `ha_flush_logs(true)` に置き換わっているので、**同時実行が多い環境では 2PC の追加コストは「グループあたり 1 回の redo fsync」まで薄まる**。逆に同時実行が 1 のときはそのまま乗る。
-
-**ステージを分けたのは、直列化が必要な区間の長さがステージごとに違うからだ。** ファイルへの `write` は `LOCK_log`、`fsync` は `LOCK_sync`、エンジンへの `commit` は `LOCK_commit` と、別の資源には別の mutex を割り当てる。1 本の大きな mutex で全部を守ると、`fsync` している間はファイルへの `write` もできない。**3 本に割ることで、3 つのグループが 3 つのステージで同時に進める。**
-
-**`AFTER_COMMIT_STAGE` が独立している理由は、`after_commit` フックが外部プラグインのコードだからだ。** 半同期の `AFTER_COMMIT` wait point や Group Replication がここに入る。これを `LOCK_commit` を握ったまま呼ぶと、プラグインが待つ間ずっとエンジンへのコミットが止まる。**別の mutex に移すことで「エンジンのコミットは終わった、フックはまだ」という状態を作れる**ようにしている。
-
-**逆に `AFTER_SYNC` は `LOCK_commit` を持ったまま待つ。これは意図的だ。** wait point の説明文がそう書いている ([`semisync_source_plugin.cc#L303`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/plugin/semisync/semisync_source_plugin.cc#L303))。
-
-```cpp title="plugin/semisync/semisync_source_plugin.cc"
-    "has synced the binary log file (or would have synced, but may have "
-    "skipped it, when sync_binlog!=1), but before it has committed in the "
-    "engine on the source side. Therefore, it guarantees that no other "
-    "sessions on the source can see the effects of the transaction before "
-    "the replica has received it. "
-```
-
-「レプリカが受け取る前に source の他セッションから見えてはいけない」という保証を得るには、**エンジンのコミットを止めておくしかない**。その代償が「commit pipeline 全体が止まる」ことで、これは設計上避けられない。
-
-**`fetch_and_process_flush_stage_queue` が「キューを空にしてから `ha_flush_logs`」の順にしているのは、グループの境界を先に確定させるためだ。** 先に redo を落としてからキューを取ると、その間に並んだセッションの prepare が redo に落ちていないまま binlog に書かれうる。順序を逆にすれば、切り取ったリストの全員が確実に flush 済みになる。
-
-**`gtid_executed` の更新を commit ステージのリーダーがまとめてやるのは、`Gtid_set` を単一区間に保つためだ。**
-
-```cpp title="sql/binlog.cc"
-      If we allow each thread to call update_on_commit only when they
-      are at finish_commit, the GTID order cannot be guaranteed and
-      temporary gaps may appear in gtid_executed. When this happen,
-      the server would have to add and remove intervals from the
-      Gtid_set, and adding and removing intervals requires a mutex,
-      which would reduce performance.
-```
-
-順序を守ること自体が目的ではなく、**順序を守ったほうがデータ構造が軽い**という理由になっている ([GTID のページ](./gtid/))。
 
 ## どう活かすか
 

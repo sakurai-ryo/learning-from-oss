@@ -6,6 +6,8 @@ sidebar:
   order: 88
 ---
 
+> **前提**: [binlog](./binlog-walkthrough/) / [binlog イベント](./binlog-events/)
+
 ## 何を学んだか
 
 レプリケーションのネットワーク層は、専用のプロトコルではない。**普通の MySQL 接続で `COM_BINLOG_DUMP_GTID` を 1 回送り、その応答として「終わらない結果セット」を受け取り続ける**だけだ。`COM_BINLOG_DUMP` は 18、`COM_BINLOG_DUMP_GTID` は 30 で ([`include/my_command.h#L48`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/include/my_command.h#L48) の `enum_server_command`)、`COM_QUERY` と同じ土俵に並んでいる。
@@ -19,6 +21,18 @@ source 側でこのコマンドを処理するスレッドが **dump thread** �
 3. **ハートビートは「送るものがないとき」に送る。** GTID のスキップ中にも送る
 
 レプリカ側の receiver (内部名は今でも `handle_slave_io`) は、受け取ったイベントを**ほぼそのまま relay log に書く**。デコードするのは GTID イベントなど位置の管理に必要なものだけだ。
+
+## なぜそうなっているか
+
+**dump thread が `LOCK_log` を取らない設計は、レプリカ台数がコミットのスループットに影響しないようにするためだ。** もし読むたびに `LOCK_log` を取るなら、レプリカが増えるほど flush ステージのリーダーが待たされる。読んでよい上限を 1 個のアトミック変数に集約し、更新側は `LOCK_binlog_end_pos` だけを一瞬取るという分離で、**「書く側」と「読む側」の競合をほぼゼロにしている**。
+
+**ハートビートを「送るものがない」ことの通知として設計したのは、TCP のタイムアウトだけでは障害を検出できないからだ。** source が生きていて binlog に何も書かれない状態と、source が落ちてパケットが届かない状態は、レプリカ側からは同じに見える。定期的に何かが届いていれば前者だと分かる。**ハートビートは relay log には書かれない**ので、ディスクを消費しない。
+
+**receiver がイベントをデコードしないのは、レプリカが source のテーブル定義を持っていないからだ。** `Rows_log_event` の中身を解釈するには対応する `Table_map` と、レプリカ側の `TABLE_SHARE` が要る。receiver の仕事は「バイト列を落とさずに relay log へ移す」ことだけに絞られていて、解釈はアプライヤの仕事になっている ([applier と並列適用](./applier-and-mta/))。**この分業のおかげで、receiver はアプライヤより遥かに速く進める。**
+
+**receiver とアプライヤを分けたことの代償が relay log のディスク使用量だ。** `relay_log_space_limit` で頭を押さえられるが、既定は 0 (無制限)。アプライヤが遅れると relay log が積み上がる。**「receiver は追いついているがアプライヤが遅れている」という状態が普通に起きる**のはこの構造から来ている ([レプリカ遅延の正体](./replication-lag/))。
+
+**`Master_info` をテーブルに置くのは、その更新を InnoDB のトランザクションに載せるためだ。** 8.4 ではファイル (`master.info` / `relay-log.info`) 版は既に選べない。詳しくは[クラッシュセーフとフィルタ](./crash-safe-replication-and-until/)。
 
 ## ソースコードのどこか
 
@@ -229,18 +243,6 @@ relay log と `master_info` の書き順にも理由がある ([`flush_master_in
 - `ER_SOURCE_FATAL_ERROR_READING_BINLOG` → source 側で binlog が読めなくなった (purge された、壊れた)
 
 同じ `server_uuid` / `server_id` を持つレプリカが 2 台繋いでくると、source 側が古いほうを殺す (`kill_zombie_dump_threads`)。レプリカ側には「A replica with the same server_uuid/server_id as this replica has connected」というエラーが出る。
-
-## なぜそうなっているか
-
-**dump thread が `LOCK_log` を取らない設計は、レプリカ台数がコミットのスループットに影響しないようにするためだ。** もし読むたびに `LOCK_log` を取るなら、レプリカが増えるほど flush ステージのリーダーが待たされる。読んでよい上限を 1 個のアトミック変数に集約し、更新側は `LOCK_binlog_end_pos` だけを一瞬取るという分離で、**「書く側」と「読む側」の競合をほぼゼロにしている**。
-
-**ハートビートを「送るものがない」ことの通知として設計したのは、TCP のタイムアウトだけでは障害を検出できないからだ。** source が生きていて binlog に何も書かれない状態と、source が落ちてパケットが届かない状態は、レプリカ側からは同じに見える。定期的に何かが届いていれば前者だと分かる。**ハートビートは relay log には書かれない**ので、ディスクを消費しない。
-
-**receiver がイベントをデコードしないのは、レプリカが source のテーブル定義を持っていないからだ。** `Rows_log_event` の中身を解釈するには対応する `Table_map` と、レプリカ側の `TABLE_SHARE` が要る。receiver の仕事は「バイト列を落とさずに relay log へ移す」ことだけに絞られていて、解釈はアプライヤの仕事になっている ([applier と並列適用](./applier-and-mta/))。**この分業のおかげで、receiver はアプライヤより遥かに速く進める。**
-
-**receiver とアプライヤを分けたことの代償が relay log のディスク使用量だ。** `relay_log_space_limit` で頭を押さえられるが、既定は 0 (無制限)。アプライヤが遅れると relay log が積み上がる。**「receiver は追いついているがアプライヤが遅れている」という状態が普通に起きる**のはこの構造から来ている ([レプリカ遅延の正体](./replication-lag/))。
-
-**`Master_info` をテーブルに置くのは、その更新を InnoDB のトランザクションに載せるためだ。** 8.4 ではファイル (`master.info` / `relay-log.info`) 版は既に選べない。詳しくは[クラッシュセーフとフィルタ](./crash-safe-replication-and-until/)。
 
 ## どう活かすか
 

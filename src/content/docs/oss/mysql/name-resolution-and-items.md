@@ -6,6 +6,8 @@ sidebar:
   order: 23
 ---
 
+> **前提**: [2 パスと contextualize](./parse-tree-and-contextualize/)
+
 ## 何を学んだか
 
 `contextualize` を抜けた時点の `Item_field` は、**列名の文字列しか持っていない**。`SELECT id FROM t` の `id` は `Item_field(POS(), NullS, NullS, "id")` でしかなく、どのテーブルの何バイト目かも、型も、照合順序も分かっていない。
@@ -30,6 +32,35 @@ flowchart TD
     CHK -->|"はい"| OK["ref / range アクセスの候補になる"]
     CHK -->|"いいえ"| NG["warn_index_not_applicable<br/>そのインデックスは候補から落ちる"]
 ```
+
+## なぜそうなっているか
+
+**照合順序の集約を「値の変換」ではなく「比較器の選択」として実装したのは、インデックスを守るためだ。** 素直に実装するなら、弱い方を強い方の照合順序に `CONVERT` してから比較すればよい。式の意味としては正しいが、列が関数で包まれた瞬間にインデックスは使えない。MySQL は比較文脈でだけ `only_consts = true` を渡し、列は裸のまま残して「この比較はこの照合順序で行う」という情報を `Arg_comparator` に持たせる道を選んだ。結果として、**片方の列だけはインデックスを使える**余地が残る。
+
+**型が違うときに REAL に落とすのは SQL 標準ではなく MySQL の方言だ。** `types_allow_materialization` のコメントがその自覚を書いている ([`sql_select.cc#L1274`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_select.cc#L1274))。
+
+```cpp title="sql/sql_select.cc"
+  /*
+    Materialization uses index lookup which implicitly converts the type of
+    res_outer into that of res_inner.
+    However, this can be done only if it respects rules in:
+    https://dev.mysql.com/doc/refman/8.0/en/type-conversion.html
+    ...
+    Those rules say that, generally, if types differ, we convert them to
+    REAL.
+    So, looking up into a number is ok: outer will be converted to
+    number. Collations don't matter.
+    This covers e.g. looking up INT into DECIMAL, CHAR into INT, DECIMAL into
+    BIT.
+  */
+  if (num_inner) return true;
+  // Conversely, looking up one number into a non-number is not possible.
+  if (num_outer) return false;
+```
+
+**数値の列に文字列を当てるのは平気、文字列の列に数値を当てるのは無理**、という非対称がここに一番きれいに書かれている。前者は文字列を数値に直せばインデックスの探索キーになる。後者は `123` に対応する文字列が `'123'` なのか `'0123'` なのか `' 123'` なのか決まらないので、探索キーが作れない。
+
+**名前解決を線形走査のままにしているのは、`MAX_TABLES` が 61 だからだ。** ハッシュを作るコストが割に合わない規模で、しかも修飾されていない名前は曖昧性検査のために最後まで見る必要がある。
 
 ## ソースコードのどこか
 
@@ -346,35 +377,6 @@ ref アクセスの候補を集める [`add_key_field` (`sql_optimizer.cc#L7197`
 ```
 
 `a = b AND b = 'x'` から `a = 'x'` を導く多重等価は、照合順序か型が食い違った瞬間に作られなくなる。**インデックスが 1 つ落ちるだけでなく、その条件が他のテーブルに伝わらなくなる**ので、join 順序の選択肢も減る ([join 順序のページ](./join-order-search/))。
-
-## なぜそうなっているか
-
-**照合順序の集約を「値の変換」ではなく「比較器の選択」として実装したのは、インデックスを守るためだ。** 素直に実装するなら、弱い方を強い方の照合順序に `CONVERT` してから比較すればよい。式の意味としては正しいが、列が関数で包まれた瞬間にインデックスは使えない。MySQL は比較文脈でだけ `only_consts = true` を渡し、列は裸のまま残して「この比較はこの照合順序で行う」という情報を `Arg_comparator` に持たせる道を選んだ。結果として、**片方の列だけはインデックスを使える**余地が残る。
-
-**型が違うときに REAL に落とすのは SQL 標準ではなく MySQL の方言だ。** `types_allow_materialization` のコメントがその自覚を書いている ([`sql_select.cc#L1274`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_select.cc#L1274))。
-
-```cpp title="sql/sql_select.cc"
-  /*
-    Materialization uses index lookup which implicitly converts the type of
-    res_outer into that of res_inner.
-    However, this can be done only if it respects rules in:
-    https://dev.mysql.com/doc/refman/8.0/en/type-conversion.html
-    ...
-    Those rules say that, generally, if types differ, we convert them to
-    REAL.
-    So, looking up into a number is ok: outer will be converted to
-    number. Collations don't matter.
-    This covers e.g. looking up INT into DECIMAL, CHAR into INT, DECIMAL into
-    BIT.
-  */
-  if (num_inner) return true;
-  // Conversely, looking up one number into a non-number is not possible.
-  if (num_outer) return false;
-```
-
-**数値の列に文字列を当てるのは平気、文字列の列に数値を当てるのは無理**、という非対称がここに一番きれいに書かれている。前者は文字列を数値に直せばインデックスの探索キーになる。後者は `123` に対応する文字列が `'123'` なのか `'0123'` なのか `' 123'` なのか決まらないので、探索キーが作れない。
-
-**名前解決を線形走査のままにしているのは、`MAX_TABLES` が 61 だからだ。** ハッシュを作るコストが割に合わない規模で、しかも修飾されていない名前は曖昧性検査のために最後まで見る必要がある。
 
 ## どう活かすか
 

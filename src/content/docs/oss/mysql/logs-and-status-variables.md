@@ -6,6 +6,8 @@ sidebar:
   order: 98
 ---
 
+> **前提**: [performance_schema](./performance-schema-internals/)
+
 ## 何を学んだか
 
 `SHOW STATUS` の値は 3 種類の出どころに分かれる。
@@ -19,6 +21,32 @@ sidebar:
 そして重要なのは、**カウンタを加算する場所がそのまま「その変数の意味」になっている**ことだ。`Handler_read_key` を加算するのはサーバではなく `ha_innobase::index_read` の 1 行で、`Created_tmp_disk_tables` を加算する `THD::inc_status_created_tmp_disk_tables()` は同時に performance_schema の文統計も上げる。この加算点をたどれば、どの変数がどの層の仕組みを映しているかが決まる。
 
 slow log 側も同じ構造で、`log_slow_extra=ON` のときにログへ書かれるのは**文の開始時と終了時の `System_status_var` の差分**だ。
+
+## なぜそうなっているか
+
+### なぜ `Handler_*` をエンジンに任せたか
+
+サーバの `handler` ラッパで数えれば 1 か所で済むように見えるが、それだと「エンジンが実際に何回内部で読んだか」とずれる。たとえば [ICP](./access-path-selection/) が効いていると、エンジンは 1 回の `index_read` のなかで複数行を評価して条件に合うものだけ返す。MRR も同様だ。
+
+エンジンに数えさせておけば、エンジンごとに「1 回とは何か」を定義できる。代償として、`Handler_read_key` の意味はエンジンによって微妙に違う。InnoDB の `index_read` は 11 か所しか加算点がないので比較的素直だが、この数字を絶対視するのではなく**同じワークロードの前後比較**に使うのが正しい。
+
+### なぜ `Slow_queries` はログが無効でも増えるのか
+
+コメントに `The docs say slow queries must be counted even when the log is off.` とある。ドキュメントが先で実装が後、という珍しい形の理由付けだ。
+
+実用上は理にかなっている。`Slow_queries` は「`long_query_time` を超えた文が何本あったか」の指標で、ログを書くかどうかとは独立した情報だ。ログを止めていてもこの数字だけは監視できる。
+
+### なぜ slow log の判定が文の**あと**にあるのか
+
+当然に見えるが、副作用がある。`log_slow_statement` は `dispatch_command` の末尾で呼ばれるので、**接続が切れた文や、実行中にサーバが落ちた文は記録されない**。「タイムアウトしたクエリが slow log にない」のはこのためだ。
+
+また `SERVER_QUERY_WAS_SLOW` の判定に使う `start_utime` は文の開始時刻なので、`Query_time` にはネットワーク待ちも[行の送信時間](./sending-rows-and-limit/)も含まれる。遅いクライアントが結果を受け取らないと、サーバ側の処理が終わっていても `Query_time` は伸び続ける。
+
+### なぜ `SHOW GLOBAL STATUS` が全 `THD` を走査するのか
+
+`System_status_var` はセッションごとに持たれるので、グローバル値を作るには足し合わせるしかない。加算のたびにグローバルなカウンタを触ると[キャッシュラインの奪い合い](./thread-model/)になるので、読むときにコストを払う設計にしてある。
+
+8.4 の `aggregated_stats` (64 シャード) は、この読み取りコストを避けるために導入された別経路だ。ただし現時点では `SHOW STATUS` ではなく OpenTelemetry メトリックの実装だけが使う。
 
 ## ソースコードのどこか
 
@@ -245,32 +273,6 @@ void THD::update_slow_query_status() {
 [`Query_logger::slow_log_write` (`sql/log.cc#L1448`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/log.cc#L1448) は `slow_log_handler_list` に登録されたハンドラを順に呼ぶ。`log_output` に `FILE` があれば `Log_to_file_event_handler`、`TABLE` があれば `mysql.slow_log` テーブルへの `INSERT` になる。8.4 ではさらに OpenTelemetry のログクライアント (`PSI_LogRecord`) が第 3 の出力先として並ぶ。
 
 `TABLE` を選ぶと `mysql.slow_log` は CSV エンジンのテーブルなので、`log_slow_extra` の追加フィールドは列がなく落ちる。
-
-## なぜそうなっているか
-
-### なぜ `Handler_*` をエンジンに任せたか
-
-サーバの `handler` ラッパで数えれば 1 か所で済むように見えるが、それだと「エンジンが実際に何回内部で読んだか」とずれる。たとえば [ICP](./access-path-selection/) が効いていると、エンジンは 1 回の `index_read` のなかで複数行を評価して条件に合うものだけ返す。MRR も同様だ。
-
-エンジンに数えさせておけば、エンジンごとに「1 回とは何か」を定義できる。代償として、`Handler_read_key` の意味はエンジンによって微妙に違う。InnoDB の `index_read` は 11 か所しか加算点がないので比較的素直だが、この数字を絶対視するのではなく**同じワークロードの前後比較**に使うのが正しい。
-
-### なぜ `Slow_queries` はログが無効でも増えるのか
-
-コメントに `The docs say slow queries must be counted even when the log is off.` とある。ドキュメントが先で実装が後、という珍しい形の理由付けだ。
-
-実用上は理にかなっている。`Slow_queries` は「`long_query_time` を超えた文が何本あったか」の指標で、ログを書くかどうかとは独立した情報だ。ログを止めていてもこの数字だけは監視できる。
-
-### なぜ slow log の判定が文の**あと**にあるのか
-
-当然に見えるが、副作用がある。`log_slow_statement` は `dispatch_command` の末尾で呼ばれるので、**接続が切れた文や、実行中にサーバが落ちた文は記録されない**。「タイムアウトしたクエリが slow log にない」のはこのためだ。
-
-また `SERVER_QUERY_WAS_SLOW` の判定に使う `start_utime` は文の開始時刻なので、`Query_time` にはネットワーク待ちも[行の送信時間](./sending-rows-and-limit/)も含まれる。遅いクライアントが結果を受け取らないと、サーバ側の処理が終わっていても `Query_time` は伸び続ける。
-
-### なぜ `SHOW GLOBAL STATUS` が全 `THD` を走査するのか
-
-`System_status_var` はセッションごとに持たれるので、グローバル値を作るには足し合わせるしかない。加算のたびにグローバルなカウンタを触ると[キャッシュラインの奪い合い](./thread-model/)になるので、読むときにコストを払う設計にしてある。
-
-8.4 の `aggregated_stats` (64 シャード) は、この読み取りコストを避けるために導入された別経路だ。ただし現時点では `SHOW STATUS` ではなく OpenTelemetry メトリックの実装だけが使う。
 
 ## どう活かすか
 

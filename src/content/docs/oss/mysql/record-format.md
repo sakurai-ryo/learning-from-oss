@@ -6,6 +6,8 @@ sidebar:
   order: 48
 ---
 
+> **前提**: [ページの構造](./page-layout/)
+
 ## 何を学んだか
 
 InnoDB のレコードには **origin** という基準点がある。「レコードへのポインタ」と言うときはこの origin を指し、**ヘッダは origin より前 (低いアドレス側) に、データは origin から後ろに**置かれる。ページ内のレコードは `next` ポインタで繋がっているが、そのポインタも次のレコードの origin を指す。
@@ -38,6 +40,36 @@ COMPACT / DYNAMIC のレコードはこうなっている。
 3. **ヘッダは 5 バイト固定**。`REC_N_NEW_EXTRA_BYTES = 5`。REDUNDANT だけ 6 バイト
 4. **COMPACT と DYNAMIC は同じレコードヘッダを使う**。違うのは「大きい列をどう外に出すか」だけで、判定は `DICT_TF_HAS_ATOMIC_BLOBS` という 1 ビットから派生する述語 1 つだ
 5. **1 レコードの列数上限は 1023**、うちユーザ列は 1017
+
+## なぜそうなっているか
+
+### なぜ origin が中間にあるのか
+
+データ部分の開始位置を固定したいからだ。`next` ポインタが origin を指し、比較関数はそこから列を順に読む。ヘッダの長さが行フォーマットによって 5 バイトか 6 バイトか変わっても、**origin から先の読み方は同じ**でいられる。
+
+さらに、可変長ヘッダは列数に応じて伸び縮みする。origin を境界に置いておけば、伸びるのは前方向だけで、データ部分のオフセット計算に影響しない。
+
+### なぜ可変長列の長さが逆順なのか
+
+コメントに理由がそのまま書いてある。
+
+```cpp title="storage/innobase/rem/rem0rec.cc"
+The offsets of the data fields are stored in an inverted
+order because then the offset of the first fields are near the
+origin, giving maybe a better processor cache hit rate in searches.
+```
+
+インデックスの比較は先頭の列から始まる。先頭の列の長さが origin のすぐ手前にあれば、レコードヘッダとまとめて同じキャッシュラインに乗る。`maybe` と書いてあるのが正直だ。
+
+### なぜ `n_owned` がレコードヘッダにあるのか
+
+[ページディレクトリ](./page-layout/)のスロットが所有するレコード数を、スロット側ではなく**所有される側の最後のレコード**に書いている。スロットは 2 バイトのオフセットだけで済み、ディレクトリを小さく保てる。4 ビットしかないので所有数は 15 が上限で、`PAGE_DIR_SLOT_MAX_N_OWNED = 8` はその範囲に余裕を持って収まる。
+
+### なぜ delete-mark なのか
+
+`DELETE` で物理的に消してしまうと、その行を読んでいる古いスナップショットが版を辿れなくなる。delete-mark されたレコードは `DB_ROLL_PTR` を持ったまま残り、[read view](./read-view-and-visibility/) から見て「まだ生きている」トランザクションには見え続ける。誰からも見えなくなった時点で purge が回収する。
+
+`DELETE` した直後にテーブルが小さくならないのも、`DELETE` 直後の同じ範囲のスキャンが遅いのも、この delete-mark されたレコードを踏んでいるからだ。
 
 ## ソースコードのどこか
 
@@ -267,36 +299,6 @@ constexpr uint32_t REC_MAX_N_USER_FIELDS =
 ```
 
 [`ha_innodb.cc#L13806`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/handler/ha_innodb.cc#L13806)。MySQL のドキュメントにある「1 テーブル 1017 列」という数字は、ここから出ている。
-
-## なぜそうなっているか
-
-### なぜ origin が中間にあるのか
-
-データ部分の開始位置を固定したいからだ。`next` ポインタが origin を指し、比較関数はそこから列を順に読む。ヘッダの長さが行フォーマットによって 5 バイトか 6 バイトか変わっても、**origin から先の読み方は同じ**でいられる。
-
-さらに、可変長ヘッダは列数に応じて伸び縮みする。origin を境界に置いておけば、伸びるのは前方向だけで、データ部分のオフセット計算に影響しない。
-
-### なぜ可変長列の長さが逆順なのか
-
-コメントに理由がそのまま書いてある。
-
-```cpp title="storage/innobase/rem/rem0rec.cc"
-The offsets of the data fields are stored in an inverted
-order because then the offset of the first fields are near the
-origin, giving maybe a better processor cache hit rate in searches.
-```
-
-インデックスの比較は先頭の列から始まる。先頭の列の長さが origin のすぐ手前にあれば、レコードヘッダとまとめて同じキャッシュラインに乗る。`maybe` と書いてあるのが正直だ。
-
-### なぜ `n_owned` がレコードヘッダにあるのか
-
-[ページディレクトリ](./page-layout/)のスロットが所有するレコード数を、スロット側ではなく**所有される側の最後のレコード**に書いている。スロットは 2 バイトのオフセットだけで済み、ディレクトリを小さく保てる。4 ビットしかないので所有数は 15 が上限で、`PAGE_DIR_SLOT_MAX_N_OWNED = 8` はその範囲に余裕を持って収まる。
-
-### なぜ delete-mark なのか
-
-`DELETE` で物理的に消してしまうと、その行を読んでいる古いスナップショットが版を辿れなくなる。delete-mark されたレコードは `DB_ROLL_PTR` を持ったまま残り、[read view](./read-view-and-visibility/) から見て「まだ生きている」トランザクションには見え続ける。誰からも見えなくなった時点で purge が回収する。
-
-`DELETE` した直後にテーブルが小さくならないのも、`DELETE` 直後の同じ範囲のスキャンが遅いのも、この delete-mark されたレコードを踏んでいるからだ。
 
 ## どう活かすか
 

@@ -6,6 +6,8 @@ sidebar:
   order: 75
 ---
 
+> **前提**: [セカンダリインデックス](./secondary-index/) / [バッファプール](./buffer-pool-walkthrough/)
+
 ## 何を学んだか
 
 `t (id PK, email, created_at)` の `created_at` にインデックスがあるとする。`INSERT` すると、クラスタードインデックスに 1 行入れるほかに、`created_at` のセカンダリインデックスの葉ページも 1 枚更新しなければならない。`created_at` がランダムな値なら、その葉ページはバッファプールに載っていない可能性が高い。**1 行の挿入のために 16KB のランダム読み込みが 1 回入る。**
@@ -45,6 +47,24 @@ flowchart TD
     BUF --> BITMAP
     BITMAP --> READ --> MERGE
 ```
+
+## なぜそうなっているか
+
+**change buffer が生まれた前提は「ランダム読み込みが桁違いに高い」だった。** 回転するディスクでは、シーケンシャル書き込み 1 回とランダム読み込み 1 回のコスト差が 100 倍あった。1 行の `INSERT` のためにセカンダリインデックスの葉を 1 枚読むのは、割に合わない支出だった。だから「読まずに済ませて、後でまとめる」に大きな価値があった。
+
+**SSD ではその前提が崩れる。** ランダム読み込みとシーケンシャル読み込みの差は数倍で、しかも NVMe では並列度でさらに埋まる。一方で change buffer が払うコストは変わらない。
+
+- ibuf 用の B+tree への挿入 (それ自体がランダム書き込みを含む)
+- bitmap ページの更新と、それを最新に保つための B+tree 側の呼び出し
+- purge との競合を避ける buffer pool watch
+- ページを読むたびに「変更が溜まっていないか」を確認する分岐
+- **クラッシュリカバリで、redo を当てた後に ibuf の中身も整合させる必要がある**
+
+最後の項目が効いている。`ibuf_should_try` に `srv_force_recovery < SRV_FORCE_NO_IBUF_MERGE` が入っているのは、**ibuf の merge がリカバリを壊しうる**ことを認めた条件だ。`innodb_force_recovery = 4` (`SRV_FORCE_NO_IBUF_MERGE`) という段が存在すること自体が、この機構が過去に何度もリカバリ時の問題の震源になったことを示している。
+
+**「効果が縮み、複雑さが残った」** ときに取れる選択は 2 つある。消すか、既定を反転させるか。MySQL は後者を取った。回転ディスク上の巨大なテーブルという構成は今も存在するし、コードを消せば戻せない。既定を `NONE` にしておけば、既定の構成では 1 行も実行されず、必要な人だけが `SET GLOBAL innodb_change_buffering = 'all'` で戻せる。
+
+**deprecated マークが付いていないのはこの立場の表明**だと読める。deprecated にすれば次のメジャーで消す約束になる。既定を反転させただけなら、いつでも戻せる。
 
 ## ソースコードのどこか
 
@@ -223,24 +243,6 @@ SELECT name, count, status FROM information_schema.INNODB_METRICS
 ```
 
 `ibuf_merges`、`ibuf_merges_insert`、`ibuf_merges_delete_mark`、`ibuf_merges_delete`、`ibuf_size` などが並ぶ ([INNODB_METRICS のページ](./innodb-stats-and-metrics/))。
-
-## なぜそうなっているか
-
-**change buffer が生まれた前提は「ランダム読み込みが桁違いに高い」だった。** 回転するディスクでは、シーケンシャル書き込み 1 回とランダム読み込み 1 回のコスト差が 100 倍あった。1 行の `INSERT` のためにセカンダリインデックスの葉を 1 枚読むのは、割に合わない支出だった。だから「読まずに済ませて、後でまとめる」に大きな価値があった。
-
-**SSD ではその前提が崩れる。** ランダム読み込みとシーケンシャル読み込みの差は数倍で、しかも NVMe では並列度でさらに埋まる。一方で change buffer が払うコストは変わらない。
-
-- ibuf 用の B+tree への挿入 (それ自体がランダム書き込みを含む)
-- bitmap ページの更新と、それを最新に保つための B+tree 側の呼び出し
-- purge との競合を避ける buffer pool watch
-- ページを読むたびに「変更が溜まっていないか」を確認する分岐
-- **クラッシュリカバリで、redo を当てた後に ibuf の中身も整合させる必要がある**
-
-最後の項目が効いている。`ibuf_should_try` に `srv_force_recovery < SRV_FORCE_NO_IBUF_MERGE` が入っているのは、**ibuf の merge がリカバリを壊しうる**ことを認めた条件だ。`innodb_force_recovery = 4` (`SRV_FORCE_NO_IBUF_MERGE`) という段が存在すること自体が、この機構が過去に何度もリカバリ時の問題の震源になったことを示している。
-
-**「効果が縮み、複雑さが残った」** ときに取れる選択は 2 つある。消すか、既定を反転させるか。MySQL は後者を取った。回転ディスク上の巨大なテーブルという構成は今も存在するし、コードを消せば戻せない。既定を `NONE` にしておけば、既定の構成では 1 行も実行されず、必要な人だけが `SET GLOBAL innodb_change_buffering = 'all'` で戻せる。
-
-**deprecated マークが付いていないのはこの立場の表明**だと読める。deprecated にすれば次のメジャーで消す約束になる。既定を反転させただけなら、いつでも戻せる。
 
 ## どう活かすか
 

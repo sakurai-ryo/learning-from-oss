@@ -6,6 +6,8 @@ sidebar:
   order: 79
 ---
 
+> **前提**: [ロックの種類 (前提)](./lock-kinds/) / [ALTER TABLE](./ddl-walkthrough/)
+
 ## 何を学んだか
 
 MySQL の運用でいちばん怖い止まり方は、たぶんこれだ。
@@ -45,6 +47,26 @@ static Sys_var_ulong Sys_lock_wait_timeout(
 ```
 
 [`sql/sys_vars.cc#L2339`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L2339)。**`lock_wait_timeout` の既定は 31536000 秒 = 1 年**だ。`innodb_lock_wait_timeout` (既定 50 秒) と混同しやすいが、別の変数で、MDL に効くのは前者のほうになる。
+
+## なぜそうなっているか
+
+**MDL が InnoDB の行ロックと別の機構である必然性は、「テーブル定義はエンジンより上のレイヤにある」ことだ。** `TABLE_SHARE` は SQL 層のキャッシュで、パーティションや複数エンジンにまたがることもある。InnoDB のテーブルロックだけでは、`.frm` 相当の定義を差し替えてよいタイミングを決められない。だから SQL 層に独立したロックマネージャが要る。
+
+**「待機中の X が後続の共有要求をブロックする」設計は、飢餓を防ぐためだ。** もし新しい SR を無制限に grant してしまうと、読み取りが絶えない本番テーブルでは X が永久に取れない。優先度行列の `X` の列がほぼ全部 `-` なのはそのためで、**ALTER を必ず終わらせるという保証と引き換えに、待っている間は全部止まる**という代償を払っている。これは選択であって、バグではない。
+
+`SH` だけが例外なのも同じ理由の裏返しで、「メタデータしか見ないので、データの一貫性を壊しようがない」要求だけを追い越させている。ただし型のコメントには釘が刺してある。
+
+```cpp title="sql/mdl.h"
+    Since SH lock is compatible with SNRW lock, the connection that
+    holds SH lock lock should not try to acquire any kind of table-level
+    or row-level lock, as this can lead to a deadlock.
+```
+
+**SH を持ったまま行ロックを取りに行くとデッドロックする。** だから `I_S` の充填は行を読まない範囲でしか SH を使えない。
+
+**`lock_wait_timeout` の既定が 1 年なのは、DDL を途中で失敗させたくないからだ。** 5.5 で MDL が導入されたとき、`ALTER TABLE` が数十秒のタイムアウトで失敗するようになったら移行の障害が大きすぎた。結果として「デッドロックしていないなら待ち続ける」が既定になっている。**この値をセッション変数として下げるかどうかは運用側の判断に委ねられている。**
+
+**MDL の寿命がトランザクション単位なのは、トランザクション中にテーブル定義が変わらないことを保証するためだ。** 文ごとに解放してしまうと、`BEGIN; SELECT * FROM t; SELECT * FROM t; COMMIT;` の 2 回で列が変わりうる。特に repeatable read のスナップショットと定義が食い違うと、undo から古い版を復元するときに列の対応が付かなくなる。
 
 ## ソースコードのどこか
 
@@ -239,26 +261,6 @@ PSI_stage_info MDL_key::m_namespace_to_wait_state_name[NAMESPACE_END] = {
 ```
 
 [`sql/mdl.cc#L115`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/mdl.cc#L115)。**`SHOW PROCESSLIST` の `State` が `Waiting for table metadata lock` なら、原因は行ロックではなく MDL だ。** ここを取り違えると `performance_schema.data_locks` を見に行ってしまい、何も出てこない。
-
-## なぜそうなっているか
-
-**MDL が InnoDB の行ロックと別の機構である必然性は、「テーブル定義はエンジンより上のレイヤにある」ことだ。** `TABLE_SHARE` は SQL 層のキャッシュで、パーティションや複数エンジンにまたがることもある。InnoDB のテーブルロックだけでは、`.frm` 相当の定義を差し替えてよいタイミングを決められない。だから SQL 層に独立したロックマネージャが要る。
-
-**「待機中の X が後続の共有要求をブロックする」設計は、飢餓を防ぐためだ。** もし新しい SR を無制限に grant してしまうと、読み取りが絶えない本番テーブルでは X が永久に取れない。優先度行列の `X` の列がほぼ全部 `-` なのはそのためで、**ALTER を必ず終わらせるという保証と引き換えに、待っている間は全部止まる**という代償を払っている。これは選択であって、バグではない。
-
-`SH` だけが例外なのも同じ理由の裏返しで、「メタデータしか見ないので、データの一貫性を壊しようがない」要求だけを追い越させている。ただし型のコメントには釘が刺してある。
-
-```cpp title="sql/mdl.h"
-    Since SH lock is compatible with SNRW lock, the connection that
-    holds SH lock lock should not try to acquire any kind of table-level
-    or row-level lock, as this can lead to a deadlock.
-```
-
-**SH を持ったまま行ロックを取りに行くとデッドロックする。** だから `I_S` の充填は行を読まない範囲でしか SH を使えない。
-
-**`lock_wait_timeout` の既定が 1 年なのは、DDL を途中で失敗させたくないからだ。** 5.5 で MDL が導入されたとき、`ALTER TABLE` が数十秒のタイムアウトで失敗するようになったら移行の障害が大きすぎた。結果として「デッドロックしていないなら待ち続ける」が既定になっている。**この値をセッション変数として下げるかどうかは運用側の判断に委ねられている。**
-
-**MDL の寿命がトランザクション単位なのは、トランザクション中にテーブル定義が変わらないことを保証するためだ。** 文ごとに解放してしまうと、`BEGIN; SELECT * FROM t; SELECT * FROM t; COMMIT;` の 2 回で列が変わりうる。特に repeatable read のスナップショットと定義が食い違うと、undo から古い版を復元するときに列の対応が付かなくなる。
 
 ## どう活かすか
 

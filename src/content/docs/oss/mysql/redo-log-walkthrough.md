@@ -6,6 +6,8 @@ sidebar:
   order: 67
 ---
 
+> **前提**: [WAL](./wal-and-recovery-basics/) / [UPDATE の一生](./life-of-an-update/)
+
 ## この層の責務
 
 redo ログの仕事は 1 行で書ける。**「ページに何をしたか」を、全スレッド共通の 1 本の数直線の上に並べて、消えない場所に置く**。

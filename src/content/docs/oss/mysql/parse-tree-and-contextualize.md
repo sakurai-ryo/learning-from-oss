@@ -6,6 +6,8 @@ sidebar:
   order: 22
 ---
 
+> **前提**: [パーサとリゾルバ](./parser-walkthrough/)
+
 ## 何を学んだか
 
 Bison の意味アクションは、ふつう「文法規則が還元された瞬間に意味的な処理をする場所」だ。MySQL も 8.0 より前はそう書かれていて、`SELECT ... FROM t WHERE ...` を還元しながら `THD` の `LEX` を直接書き換えていた。
@@ -56,6 +58,62 @@ flowchart TD
     R1 -.->|"構文エラー"| E1["my_sql_parser_error<br/>THD は無傷"]
     C3 -.->|"意味エラー"| E2["my_error<br/>LEX は次の lex_start で捨てる"]
 ```
+
+## なぜそうなっているか
+
+### 「文脈自由」を守ると、失敗が安くなる
+
+1 パス目が確保するのは `THD::mem_root` 上のノードだけで、ここには文が終われば丸ごと解放されるアリーナが使われる。構文エラーで途中終了しても、個別に巻き戻す対象がない。
+
+`THD::cleanup_after_parse_error` に残された例外が、この方針の輪郭を逆から示している。
+
+```cpp title="sql/sql_class.cc"
+/**
+  Restore session state in case of parse error.
+
+  This is a clean up function that is invoked after the Bison generated
+  parser before returning an error from THD::sql_parser(). If your
+  semantic actions manipulate with the session state (which
+  is a very bad practice and should not normally be employed) and
+  need a clean-up in case of error, and you can not use %destructor
+  rule in the grammar file itself, this function should be used
+  to implement the clean up.
+*/
+void THD::cleanup_after_parse_error() {
+  sp_head *sp = lex->sphead;
+
+  if (sp) {
+    sp->m_parser_data.finish_parsing_sp_body(this);
+    ...
+```
+
+[`sql/sql_class.cc#L3187`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_class.cc#L3187)。「意味アクションがセッション状態をいじるのは非常に悪い作法で、通常やるべきではない」と明言したうえで、**それでも残っている 1 つ (ストアドプログラム本文の `sp_head`) だけ**を片付けている。関数の本体が 8 行しかないことが、方針が実際に効いていることの証拠になる。
+
+### 文法から文脈を追い出すと、規則が減る
+
+`PTI_simple_ident_ident` の例が分かりやすい。`HAVING` の中の識別子と `WHERE` の中の識別子を文法で区別しようとすると、`expr` の規則一式を `having_expr` として複製することになる。18000 行の文法ファイルがさらに倍になる。
+
+同じ理由が `INTO` 句の扱いにもコメントとして残っている。
+
+```cpp title="sql/sql_yacc.yy (select_stmt の前のコメント)"
+  While it's possible to write an unambiguous grammar, it would force us to
+  duplicate the entire <select statement> syntax all the way down to the <into
+  clause>. So instead we solve it by writing an ambiguous grammar and use
+  precedence rules to sort out the shift/reduce conflict.
+```
+
+MySQL は「あいまいな文法 + 後段での判断」を選び続けている。`%expect 59` という宣言が、59 個の shift/reduce 衝突を承知の上で受け入れていることを示している。
+
+### 2 パス目でも `Query_block` は「作られる」のではなく「埋められる」
+
+`lex_start` の時点で空の `Query_block` が 1 つできている ([パーサ walkthrough](./parser-walkthrough/))。2 パス目はその中身を埋めていく。サブクエリのぶんだけが追加で作られ、その呼び出しは文法ではなく contextualize 側にある。
+
+```console
+$ git grep -n 'lex->new_query(' mysql-8.4.11 -- sql/
+sql/parse_tree_nodes.cc:4437:  Query_block *child = lex->new_query(pc->select);
+```
+
+ツリー全体で 1 箇所、しかも `parse_tree_nodes.cc` の中。**文法ファイルから `Query_block` を作る経路はもう残っていない**。
 
 ## ソースコードのどこか
 
@@ -286,62 +344,6 @@ bool PT_joined_table::contextualize_tabs(Parse_context *pc) {
 ```
 
 **`RIGHT JOIN` は 2 パス目の冒頭で `LEFT JOIN` に書き換えられ、左右のテーブルが入れ替わる。** 以降のリゾルバもオプティマイザも `RIGHT JOIN` を知らない。入れ替えた事実は `Table_ref::join_order_swapped` にだけ残り、`EXPLAIN` のテーブル順が書いた順と違って見える理由になる。`add_json_info` はこの書き換えの前に呼ばれるので、`SHOW PARSE_TREE` には `RIGHT OUTER JOIN` と出る。
-
-## なぜそうなっているか
-
-### 「文脈自由」を守ると、失敗が安くなる
-
-1 パス目が確保するのは `THD::mem_root` 上のノードだけで、ここには文が終われば丸ごと解放されるアリーナが使われる。構文エラーで途中終了しても、個別に巻き戻す対象がない。
-
-`THD::cleanup_after_parse_error` に残された例外が、この方針の輪郭を逆から示している。
-
-```cpp title="sql/sql_class.cc"
-/**
-  Restore session state in case of parse error.
-
-  This is a clean up function that is invoked after the Bison generated
-  parser before returning an error from THD::sql_parser(). If your
-  semantic actions manipulate with the session state (which
-  is a very bad practice and should not normally be employed) and
-  need a clean-up in case of error, and you can not use %destructor
-  rule in the grammar file itself, this function should be used
-  to implement the clean up.
-*/
-void THD::cleanup_after_parse_error() {
-  sp_head *sp = lex->sphead;
-
-  if (sp) {
-    sp->m_parser_data.finish_parsing_sp_body(this);
-    ...
-```
-
-[`sql/sql_class.cc#L3187`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_class.cc#L3187)。「意味アクションがセッション状態をいじるのは非常に悪い作法で、通常やるべきではない」と明言したうえで、**それでも残っている 1 つ (ストアドプログラム本文の `sp_head`) だけ**を片付けている。関数の本体が 8 行しかないことが、方針が実際に効いていることの証拠になる。
-
-### 文法から文脈を追い出すと、規則が減る
-
-`PTI_simple_ident_ident` の例が分かりやすい。`HAVING` の中の識別子と `WHERE` の中の識別子を文法で区別しようとすると、`expr` の規則一式を `having_expr` として複製することになる。18000 行の文法ファイルがさらに倍になる。
-
-同じ理由が `INTO` 句の扱いにもコメントとして残っている。
-
-```cpp title="sql/sql_yacc.yy (select_stmt の前のコメント)"
-  While it's possible to write an unambiguous grammar, it would force us to
-  duplicate the entire <select statement> syntax all the way down to the <into
-  clause>. So instead we solve it by writing an ambiguous grammar and use
-  precedence rules to sort out the shift/reduce conflict.
-```
-
-MySQL は「あいまいな文法 + 後段での判断」を選び続けている。`%expect 59` という宣言が、59 個の shift/reduce 衝突を承知の上で受け入れていることを示している。
-
-### 2 パス目でも `Query_block` は「作られる」のではなく「埋められる」
-
-`lex_start` の時点で空の `Query_block` が 1 つできている ([パーサ walkthrough](./parser-walkthrough/))。2 パス目はその中身を埋めていく。サブクエリのぶんだけが追加で作られ、その呼び出しは文法ではなく contextualize 側にある。
-
-```console
-$ git grep -n 'lex->new_query(' mysql-8.4.11 -- sql/
-sql/parse_tree_nodes.cc:4437:  Query_block *child = lex->new_query(pc->select);
-```
-
-ツリー全体で 1 箇所、しかも `parse_tree_nodes.cc` の中。**文法ファイルから `Query_block` を作る経路はもう残っていない**。
 
 ## どう活かすか
 

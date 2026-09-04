@@ -6,6 +6,8 @@ sidebar:
   order: 82
 ---
 
+> **前提**: [ALGORITHM と LOCK の決定](./alter-algorithm-selection/) / [セカンダリインデックス](./secondary-index/)
+
 ## 何を学んだか
 
 `ALTER TABLE t ADD INDEX (c), ALGORITHM=INPLACE, LOCK=NONE` は、こういう構造になっている。
@@ -20,6 +22,32 @@ sidebar:
 読み手が取り違えやすいのはここだ。**row log の適用は「排他 MDL の下」ではない。** 適用が始まる時点で MDL はまだ SU で、他のセッションはテーブルを開いたままだ。止めているのは `dict_index_get_lock(index)` の X ラッチ、つまり**その 1 本のインデックスに対する latch** だけになる。MDL の排他はさらにその後、`ha_commit_inplace_alter_table` の直前に取る ([ALTER の walkthrough](./ddl-walkthrough/))。
 
 `row_log_t` はメモリだけではない。1 ブロック分溜まるとファイルに書き出す。その総量が `innodb_online_alter_log_max_size` (既定 128MiB) を超えると、**そこで構築が失敗する**。
+
+## なぜそうなっているか
+
+**row log を「追記専用のバイト列」にしたのは、DML 側のコストを最小化するためだ。** 新インデックスの B+tree を直接更新する設計にすると、構築中のツリーは断片的なので探索が成立しない。並べ替え済みの部分と未構築の部分が混在するからだ。追記なら位置を探す必要がなく、`mutex_enter` + `memcpy` で済む。
+
+**上限を設けたのは、追記が構築より速いと永久に終わらないからだ。** 書き込みが激しいテーブルでは、走査が終わるまでに溜まったログの適用中にさらにログが溜まり、収束しない可能性がある。`innodb_online_alter_log_max_size` は「収束しないなら早めに諦める」ための閾値になっている。**上げれば通る可能性は上がるが、適用フェーズが長くなり、その間 X ラッチで DML が止まる。**
+
+**適用を MDL の排他ではなくインデックスの X ラッチでやるのは、影響範囲を絞るためだ。** MDL を排他にすると、そのテーブルへの**すべての**アクセスが止まる。インデックスの X ラッチなら、止まるのは「そのインデックスを更新しようとする DML」だけで、読み取りは通る (新インデックスはまだ公開されていないので、誰もそれを読まない)。
+
+**走査を REPEATABLE READ に固定しているのは、row log との整合を取るためだ** ([ALTER の walkthrough](./ddl-walkthrough/))。コメントが理由を 2 つ挙げている。
+
+```cpp title="storage/innobase/handler/handler0alter.cc"
+    /* We must scan the index at an isolation level >= READ COMMITTED, because
+    a dirty read will see half written blob references.
+    ...
+    When creating a secondary index online, this table scan must not see
+    records that have only been inserted to the clustered index, but have
+    not been written to the online_log of index[]. If we performed
+    READ UNCOMMITTED, it could happen that the ADD INDEX reaches
+    ONLINE_INDEX_COMPLETE state between the time the DML thread has updated
+    the clustered index but has not yet accessed secondary index. */
+```
+
+**走査が row log より「先」を見てしまうと、その行が二重に入るか、逆に抜ける。** スナップショットを prepare 時点に固定することで、「スナップショット以前は走査が拾う、以後は row log が拾う」という排他的な分担が成立する。**セッションの分離レベルが READ COMMITTED でも、この走査だけは RR になる。**
+
+**ログの溢れを `DICT_CORRUPT` で表現しているのは、DML 側にエラーを返す先がないからだ。** `INSERT` を打ったユーザに「他の誰かの ALTER が失敗しました」とは返せない。フラグを立てて DML は成功させ、ALTER 側が適用時に気づいて `ONLINE_INDEX_ABORTED` にする。**このとき失敗するのは ALTER だけで、データは一切壊れていない。** 「corrupt」という名前は、まだ公開されていない索引の内部状態を指しているだけだ。
 
 ## ソースコードのどこか
 
@@ -360,32 +388,6 @@ sequenceDiagram
 適用側は `row_log_table_apply` で、こちらは `row_log_online_op` ではなく `row_log_table_insert` / `row_log_table_update` / `row_log_table_delete` が書き込む。**PK が変わるかどうか (`same_pk`) でログの内容が変わる**のがセカンダリインデックス版との大きな違いで、PK が変わるなら旧行の全列を記録しないと新表のどこに入れるか決められない。ログはより大きくなる。
 
 BLOB は別扱いで、`log->blobs` (ページ番号 → ログのオフセットの `std::map`) を使って「解放済みの off-page 列を触らない」ようにしている。
-
-## なぜそうなっているか
-
-**row log を「追記専用のバイト列」にしたのは、DML 側のコストを最小化するためだ。** 新インデックスの B+tree を直接更新する設計にすると、構築中のツリーは断片的なので探索が成立しない。並べ替え済みの部分と未構築の部分が混在するからだ。追記なら位置を探す必要がなく、`mutex_enter` + `memcpy` で済む。
-
-**上限を設けたのは、追記が構築より速いと永久に終わらないからだ。** 書き込みが激しいテーブルでは、走査が終わるまでに溜まったログの適用中にさらにログが溜まり、収束しない可能性がある。`innodb_online_alter_log_max_size` は「収束しないなら早めに諦める」ための閾値になっている。**上げれば通る可能性は上がるが、適用フェーズが長くなり、その間 X ラッチで DML が止まる。**
-
-**適用を MDL の排他ではなくインデックスの X ラッチでやるのは、影響範囲を絞るためだ。** MDL を排他にすると、そのテーブルへの**すべての**アクセスが止まる。インデックスの X ラッチなら、止まるのは「そのインデックスを更新しようとする DML」だけで、読み取りは通る (新インデックスはまだ公開されていないので、誰もそれを読まない)。
-
-**走査を REPEATABLE READ に固定しているのは、row log との整合を取るためだ** ([ALTER の walkthrough](./ddl-walkthrough/))。コメントが理由を 2 つ挙げている。
-
-```cpp title="storage/innobase/handler/handler0alter.cc"
-    /* We must scan the index at an isolation level >= READ COMMITTED, because
-    a dirty read will see half written blob references.
-    ...
-    When creating a secondary index online, this table scan must not see
-    records that have only been inserted to the clustered index, but have
-    not been written to the online_log of index[]. If we performed
-    READ UNCOMMITTED, it could happen that the ADD INDEX reaches
-    ONLINE_INDEX_COMPLETE state between the time the DML thread has updated
-    the clustered index but has not yet accessed secondary index. */
-```
-
-**走査が row log より「先」を見てしまうと、その行が二重に入るか、逆に抜ける。** スナップショットを prepare 時点に固定することで、「スナップショット以前は走査が拾う、以後は row log が拾う」という排他的な分担が成立する。**セッションの分離レベルが READ COMMITTED でも、この走査だけは RR になる。**
-
-**ログの溢れを `DICT_CORRUPT` で表現しているのは、DML 側にエラーを返す先がないからだ。** `INSERT` を打ったユーザに「他の誰かの ALTER が失敗しました」とは返せない。フラグを立てて DML は成功させ、ALTER 側が適用時に気づいて `ONLINE_INDEX_ABORTED` にする。**このとき失敗するのは ALTER だけで、データは一切壊れていない。** 「corrupt」という名前は、まだ公開されていない索引の内部状態を指しているだけだ。
 
 ## どう活かすか
 

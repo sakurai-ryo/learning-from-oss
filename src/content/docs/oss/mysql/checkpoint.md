@@ -6,6 +6,8 @@ sidebar:
   order: 70
 ---
 
+> **前提**: [redo ログ](./redo-log-walkthrough/) / [flush list と page cleaner](./flush-list-and-page-cleaner/)
+
 ## 何を学んだか
 
 チェックポイントの意味は 1 文で言える。
@@ -48,6 +50,16 @@ stateDiagram-v2
 ```
 
 **`innodb_io_capacity` / `innodb_io_capacity_max` が効くのは最初の 2 段だけだ。** 同期 flush まで来たらチューニングの余地はない。
+
+## なぜそうなっているか
+
+**チェックポイントが「ページを書いた記録」ではなく「まだ書いていないページの下限」なのは、fuzzy checkpoint だからだ。** InnoDB は「チェックポイントを打つためにバッファプールを全部吐き出す」ことをしない。それをやると、そのたびにサーバが止まる。代わりに page cleaner が常時少しずつ書き、checkpointer は「今どこまでが安全か」を観測して記録するだけにした。**チェックポイントを打つコストが O(1) になっている**のはこの設計の帰結だ。
+
+**3 段の警戒レベルがあるのは、急ブレーキを避けるためだ。** age が上限に達してから止めると、止まる時間が長くなる。手前から page cleaner を段階的に速くすることで、多くの場合は上限に到達しない。`innodb_io_capacity` / `innodb_io_capacity_max` が効くのは「regular」と「adaptive」の範囲までで、**同期 flush に入ったらこの設定は無視される**。上限に触れた時点でチューニングの余地はもうない、ということだ。
+
+**論理容量が物理容量より小さいのは、次のファイルを作る余地を残すためだ。** `Log_files_capacity` のコメントによれば `(LOG_N_FILES - 2) / LOG_N_FILES`、つまり物理容量の約 94% までしか論理的には使えない。`innodb_redo_log_capacity` に設定した値がそのまま使えるわけではない。
+
+**`free_check_limit_lsn` を 0 にして全員止めるという実装は乱暴に見えるが、正しい。** ここまで来ているということは、redo に空きがなく、log_writer が書けず、page cleaner も追いついていない。**新しい redo を作らせないこと以外に、状態を回復させる手段がない。** 中途半端に一部だけ通すと、通ったスレッドが latch を握ったまま止まって事態が悪化する。`log_free_check` が「危険な latch を持っていない安全な地点」でしか呼ばれない (debug ビルドの `log_free_check_validate` が検査している) のもこのためだ。
 
 ## ソースコードのどこか
 
@@ -215,16 +227,6 @@ ER_IB_MSG_WAITING_ON_LAGGING_REDO_LOG_CONSUMER
 ```
 
 **この 4 つが「redo が足りない」の症状の全部だ。** 8.0.30 より前の `InnoDB: ERROR: the age of the last checkpoint is ...` は 8.4 には存在しない。
-
-## なぜそうなっているか
-
-**チェックポイントが「ページを書いた記録」ではなく「まだ書いていないページの下限」なのは、fuzzy checkpoint だからだ。** InnoDB は「チェックポイントを打つためにバッファプールを全部吐き出す」ことをしない。それをやると、そのたびにサーバが止まる。代わりに page cleaner が常時少しずつ書き、checkpointer は「今どこまでが安全か」を観測して記録するだけにした。**チェックポイントを打つコストが O(1) になっている**のはこの設計の帰結だ。
-
-**3 段の警戒レベルがあるのは、急ブレーキを避けるためだ。** age が上限に達してから止めると、止まる時間が長くなる。手前から page cleaner を段階的に速くすることで、多くの場合は上限に到達しない。`innodb_io_capacity` / `innodb_io_capacity_max` が効くのは「regular」と「adaptive」の範囲までで、**同期 flush に入ったらこの設定は無視される**。上限に触れた時点でチューニングの余地はもうない、ということだ。
-
-**論理容量が物理容量より小さいのは、次のファイルを作る余地を残すためだ。** `Log_files_capacity` のコメントによれば `(LOG_N_FILES - 2) / LOG_N_FILES`、つまり物理容量の約 94% までしか論理的には使えない。`innodb_redo_log_capacity` に設定した値がそのまま使えるわけではない。
-
-**`free_check_limit_lsn` を 0 にして全員止めるという実装は乱暴に見えるが、正しい。** ここまで来ているということは、redo に空きがなく、log_writer が書けず、page cleaner も追いついていない。**新しい redo を作らせないこと以外に、状態を回復させる手段がない。** 中途半端に一部だけ通すと、通ったスレッドが latch を握ったまま止まって事態が悪化する。`log_free_check` が「危険な latch を持っていない安全な地点」でしか呼ばれない (debug ビルドの `log_free_check_validate` が検査している) のもこのためだ。
 
 ## どう活かすか
 

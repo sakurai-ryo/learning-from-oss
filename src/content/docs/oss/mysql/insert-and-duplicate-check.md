@@ -6,6 +6,8 @@ sidebar:
   order: 63
 ---
 
+> **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [RR と RC の違い](./locking-in-rr-vs-rc/)
+
 ## 何を学んだか
 
 INSERT は「行を書くだけ」なのでロックとは縁が薄そうに見える。実際、**UNIQUE 制約がなければ INSERT はロック構造体をほとんど作らない**。
@@ -22,6 +24,20 @@ INSERT は「行を書くだけ」なのでロックとは縁が薄そうに見�
 「同時 INSERT で `Deadlock found when trying to get lock` が出る」の大半は、この next-key lock と insert intention の組み合わせから生まれる。
 
 AUTO_INCREMENT のほうは別の話で、8.4 既定の `innodb_autoinc_lock_mode=2` は**テーブル単位の AUTO-INC ロックを取らない**。並行性と引き換えに、採番の連続性を捨てている。
+
+## なぜそうなっているか
+
+**ユニークなセカンダリの重複検査が分離レベルを無視するのは、UNIQUE 制約が分離レベルより強い保証だからだ。** 「重複がない」はどの分離レベルでも守られなければならない。もし RC でギャップを外したら、2 つのトランザクションが「重複なし」を確認してから両方が挿入できてしまう。**制約の正しさのためにギャップロックが必要**なので、`trx->skip_gap_locks()` ではなく `table->skip_gap_locks()` (DD テーブル例外だけ) を見ている。DD テーブルが例外なのは、DDL が MDL で直列化されているぶん InnoDB のロックに頼らなくてよいからだ。
+
+**クラスタードの重複検査がギャップを取らないのは、PK が B+tree のキーだからだ。** キーが等しいレコードは高々 1 本しかありえず、「等しい値の集合」を守るための隙間が存在しない。だから `LOCK_REC_NOT_GAP` で足りる。**PK 衝突より UNIQUE 衝突のほうがデッドロックを起こしやすい**のはこの差から来ている。
+
+**insert intention を「待つときだけ作る」のは、INSERT の常道を軽くするためだ。** 大半の INSERT は誰とも競合しない。そこで毎回ロック構造体を作るのは無駄なので、「次のレコードにロックが 1 つもない」を最初に確かめて即座に抜ける。挿入した行自体の保護は `DB_TRX_ID` (暗黙ロック) が担う。
+
+**誰も insert intention を待たないようにしたのは、不要なデッドロックを消すためだ。** ソースのコメントがそう書いている——「next-key lock が insert intention を待ち、その insert intention が許可されたときに、待っていた next-key lock でデッドロックした」という実際の障害への対処だと読める。insert intention は「挿入したい」という意思表示にすぎず、それ自体は何も守っていない。
+
+**`innodb_autoinc_lock_mode` の既定が 2 になったのは、STATEMENT ベースの binlog が主流でなくなったからだ。** モード 0 が AUTO-INC ロックを文の終わりまで保持していたのは、「1 つの文が採番した値が連続する」ことを保証するためで、それは STATEMENT ベースのレプリケーションで同じ結果を再現するのに必要だった。ROW ベースが既定になった今、その保証は要らない。ヘルプ文が `2 => No AUTOINC locking (unsafe for SBR)` と明記している。
+
+**`PLUGIN_VAR_READONLY` にしてあるのは、稼働中に切り替えると採番の性質が途中で変わるからだ。** 同じテーブルに対して「連続を保証するモード」と「しないモード」の文が混ざると、レプリケーションの安全性を静的に判断できなくなる。
 
 ## ソースコードのどこか
 
@@ -209,20 +225,6 @@ sequenceDiagram
 [`innobase_commit` の中 (L6144)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/handler/ha_innodb.cc#L6144)。行ロックと違って**コミットまで持たない**。ロールバック側 ([L6197](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/handler/ha_innodb.cc#L6197)) にも同じ呼び出しがあり、コメントが「長くなりうるロールバックの前に解放する」と書いている。
 
 採番値そのものは `dict_table_autoinc_update_if_greater` で単調最大更新され ([L20037](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/handler/ha_innodb.cc#L20037))、テーブルの `autoinc_persisted` として永続化される ([`ha_innobase::open` の L7805 付近](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/handler/ha_innodb.cc#L7805))。8.0 以降はこの永続化のおかげで**再起動しても採番が巻き戻らない**。
-
-## なぜそうなっているか
-
-**ユニークなセカンダリの重複検査が分離レベルを無視するのは、UNIQUE 制約が分離レベルより強い保証だからだ。** 「重複がない」はどの分離レベルでも守られなければならない。もし RC でギャップを外したら、2 つのトランザクションが「重複なし」を確認してから両方が挿入できてしまう。**制約の正しさのためにギャップロックが必要**なので、`trx->skip_gap_locks()` ではなく `table->skip_gap_locks()` (DD テーブル例外だけ) を見ている。DD テーブルが例外なのは、DDL が MDL で直列化されているぶん InnoDB のロックに頼らなくてよいからだ。
-
-**クラスタードの重複検査がギャップを取らないのは、PK が B+tree のキーだからだ。** キーが等しいレコードは高々 1 本しかありえず、「等しい値の集合」を守るための隙間が存在しない。だから `LOCK_REC_NOT_GAP` で足りる。**PK 衝突より UNIQUE 衝突のほうがデッドロックを起こしやすい**のはこの差から来ている。
-
-**insert intention を「待つときだけ作る」のは、INSERT の常道を軽くするためだ。** 大半の INSERT は誰とも競合しない。そこで毎回ロック構造体を作るのは無駄なので、「次のレコードにロックが 1 つもない」を最初に確かめて即座に抜ける。挿入した行自体の保護は `DB_TRX_ID` (暗黙ロック) が担う。
-
-**誰も insert intention を待たないようにしたのは、不要なデッドロックを消すためだ。** ソースのコメントがそう書いている——「next-key lock が insert intention を待ち、その insert intention が許可されたときに、待っていた next-key lock でデッドロックした」という実際の障害への対処だと読める。insert intention は「挿入したい」という意思表示にすぎず、それ自体は何も守っていない。
-
-**`innodb_autoinc_lock_mode` の既定が 2 になったのは、STATEMENT ベースの binlog が主流でなくなったからだ。** モード 0 が AUTO-INC ロックを文の終わりまで保持していたのは、「1 つの文が採番した値が連続する」ことを保証するためで、それは STATEMENT ベースのレプリケーションで同じ結果を再現するのに必要だった。ROW ベースが既定になった今、その保証は要らない。ヘルプ文が `2 => No AUTOINC locking (unsafe for SBR)` と明記している。
-
-**`PLUGIN_VAR_READONLY` にしてあるのは、稼働中に切り替えると採番の性質が途中で変わるからだ。** 同じテーブルに対して「連続を保証するモード」と「しないモード」の文が混ざると、レプリケーションの安全性を静的に判断できなくなる。
 
 ## どう活かすか
 

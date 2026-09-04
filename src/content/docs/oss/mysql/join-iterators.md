@@ -6,6 +6,8 @@ sidebar:
   order: 36
 ---
 
+> **前提**: [iterator executor](./executor-walkthrough/) / [join 順序](./join-order-search/)
+
 ## 何を学んだか
 
 `AccessPath::Type` の「Joins」区画には 4 つしかない ([`access_path.h#L229`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/join_optimizer/access_path.h#L229))。
@@ -25,6 +27,33 @@ sidebar:
 1. **nested loop は「内側を外側 1 行ごとに `Init()` し直す」ことで実現されている。** join 専用の機構ではなく、`RowIterator` の巻き戻し契約をそのまま使っている ([エグゼキュータのページ](./executor-walkthrough/))
 2. **hash join は build 側 (内側) を `join_buffer_size` ぶんメモリに載せ、溢れたら最大 128 個のチャンクファイルに分割する。** 溢れた瞬間に、それまで保たれていた「probe 側の順序」が失われる
 3. **BKA は既定では使われない。** `optimizer_switch` の `batched_key_access` が既定 off なので、`OPTIMIZER_SWITCH_DEFAULT` に入っていない
+
+## なぜそうなっているか
+
+**BNL を捨てて hash join にしたのは、「バッファに溜める」以外に何もしていなかったからだ。** 旧 BNL は外側の行を join buffer に溜め、内側を 1 回スキャンする間に溜めた全行と突き合わせる。内側のスキャン回数は減るが、比較の総数は変わらない。hash join は同じバッファを使って**ハッシュ表**を作るので、比較が O(1) になる。同じ `join_buffer_size` を消費して結果が良くなるのだから、置き換えない理由がない。EXPLAIN の文字列だけ残ったのは互換性のためで、コメントもそう明言している。
+
+**build 側を内側に固定したのは、旧オプティマイザのコスト情報が不完全だからだ。** `CreateIteratorFromAccessPath` の HASH_JOIN ケースには、build と probe のどちらを先に読むかを選ぶロジックがあるが、hypergraph でしか有効にならない。
+
+```cpp title="sql/join_optimizer/access_path.cc"
+        // (We only do this for Hypergraph, as the cost data for the
+        // traditional optimizer are incomplete, and since we are reluctant to
+        // change existing behavior.) Note that we always try the probe input
+        // first for left join and antijoin.
+```
+
+旧オプティマイザでは「join 順序で後ろに来たテーブルが build 側」でしかない。だから **JOIN の順序が hash join のメモリ使用量を直接決める**。大きいテーブルが内側に来ると、そのまま溢れる。
+
+**spill の上限を 128 に固定したのはファイルディスクリプタの都合だ。** build 側と probe 側で同数のファイルを開くので、最悪 256 個のファイルが 1 つの hash join で開く。同時実行するセッション数を掛けると、`open_files_limit` に届きうる。動的に決めればよさそうに見えるが、コードは単純な定数を選んだ。
+
+**in-memory hash join だけ順序が保たれる、と明記されている。**
+
+```cpp title="sql/iterators/hash_join_iterator.h"
+/// If we are able to execute the hash join in memory (classic hash join),
+/// the output will be sorted the same as the left (probe) input. If we start
+/// spilling to disk, we lose any reasonable ordering properties.
+```
+
+これは `ORDER BY` のないクエリの結果順が「データ量によって変わる」ことを意味する。順序を保証しないという SQL の建前どおりだが、テストが `ORDER BY` なしで結果を比較していると、データが増えた日に落ちる。
 
 ## ソースコードのどこか
 
@@ -270,33 +299,6 @@ static constexpr const unsigned long long OPTIMIZER_SWITCH_DEFAULT{
 ```
 
 **行 ID を取るために `position()` を呼ぶ必要がある**ので、weedout が計画に入ると下位の iterator にも「行 ID を用意しろ」というフラグ (`store_rowids` / `tables_to_get_rowid_for`) が伝播する。hash join が build 側の行をパックするときに行 ID まで含めるかどうかも、これで決まる。EXPLAIN の `Start temporary` / `End temporary` がこの区間を表している。
-
-## なぜそうなっているか
-
-**BNL を捨てて hash join にしたのは、「バッファに溜める」以外に何もしていなかったからだ。** 旧 BNL は外側の行を join buffer に溜め、内側を 1 回スキャンする間に溜めた全行と突き合わせる。内側のスキャン回数は減るが、比較の総数は変わらない。hash join は同じバッファを使って**ハッシュ表**を作るので、比較が O(1) になる。同じ `join_buffer_size` を消費して結果が良くなるのだから、置き換えない理由がない。EXPLAIN の文字列だけ残ったのは互換性のためで、コメントもそう明言している。
-
-**build 側を内側に固定したのは、旧オプティマイザのコスト情報が不完全だからだ。** `CreateIteratorFromAccessPath` の HASH_JOIN ケースには、build と probe のどちらを先に読むかを選ぶロジックがあるが、hypergraph でしか有効にならない。
-
-```cpp title="sql/join_optimizer/access_path.cc"
-        // (We only do this for Hypergraph, as the cost data for the
-        // traditional optimizer are incomplete, and since we are reluctant to
-        // change existing behavior.) Note that we always try the probe input
-        // first for left join and antijoin.
-```
-
-旧オプティマイザでは「join 順序で後ろに来たテーブルが build 側」でしかない。だから **JOIN の順序が hash join のメモリ使用量を直接決める**。大きいテーブルが内側に来ると、そのまま溢れる。
-
-**spill の上限を 128 に固定したのはファイルディスクリプタの都合だ。** build 側と probe 側で同数のファイルを開くので、最悪 256 個のファイルが 1 つの hash join で開く。同時実行するセッション数を掛けると、`open_files_limit` に届きうる。動的に決めればよさそうに見えるが、コードは単純な定数を選んだ。
-
-**in-memory hash join だけ順序が保たれる、と明記されている。**
-
-```cpp title="sql/iterators/hash_join_iterator.h"
-/// If we are able to execute the hash join in memory (classic hash join),
-/// the output will be sorted the same as the left (probe) input. If we start
-/// spilling to disk, we lose any reasonable ordering properties.
-```
-
-これは `ORDER BY` のないクエリの結果順が「データ量によって変わる」ことを意味する。順序を保証しないという SQL の建前どおりだが、テストが `ORDER BY` なしで結果を比較していると、データが増えた日に落ちる。
 
 ## どう活かすか
 

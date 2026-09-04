@@ -40,6 +40,7 @@ MySQL の運用でぶつかる問題は、ほぼ全部「どの層の話なの�
 
 - **walkthrough** (13 枚) — 層ごとの配線と制御フローを固定する。`この層の責務 / 主要な型とその関係 / 処理の流れ / 守られている不変条件 / つまずきどころ` の形
 - **lesson** — 設計理由を 1 つずつ切り出す。`何を学んだか / ソースコードのどこか / なぜそうなっているか / どう活かすか` の形
+- **reference** — 通読ではなく引くためのページ。[用語集](./glossary/)と[症状索引](./symptom-index/)の 2 枚
 
 先に walkthrough で経路を通し、そこから lesson に降りる読み方を想定している。
 
@@ -59,10 +60,34 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 - **耐久性の実装が lock-free に寄せられたこと。** redo ログバッファへの書き込みは `Link_buf` という リングで調停され、log writer / flusher / notifier の 4 スレッドが並行に進む
 - **8.4 で消えたもの、既定が変わったもの。** change buffer は既定 OFF になり、`I_S.INNODB_LOCKS` は消え、レプリカの依存追跡は WRITESET 固定になった。8.0 時代の記事がそのまま当てはまらない箇所が増えている
 
+## まず読む 13 ページ
+
+103 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
+
+1. [用語集](./glossary/) — 通読しなくていい。知らない語に当たったら戻ってくる
+1. [ソースの読み方](./reading-mysql-source/) — `ut_ad` が消えること、`true` がエラーであること。これは通読する
+1. [SELECT の一生](./life-of-a-select/) — 1 行が返るまでの全経路を 1 ページで
+1. [UPDATE の一生](./life-of-an-update/) — 書き込み側の全経路
+1. [パーサとリゾルバ](./parser-walkthrough/) — 文字列が `Query_block` になるまで
+1. [JOIN::optimize](./optimizer-walkthrough/) — 最適化の段階の順番
+1. [AccessPath](./access-path-tree/) — この章で一番効く型
+1. [iterator executor](./executor-walkthrough/) — `Read()` のループ
+1. [handler](./handler-walkthrough/) — Server と InnoDB の境界
+1. [バッファプール](./buffer-pool-walkthrough/) — InnoDB の全読み書きの入口
+1. [read view と可視性](./read-view-and-visibility/) — MVCC の実体
+1. [ロックの種類](./lock-modes-and-types/) — next-key lock まで
+1. [redo ログ](./redo-log-walkthrough/) — 耐久性の本体
+
+現象のほうが先にあるなら、この 13 ページの代わりに[症状索引](./symptom-index/)から引いてもいい。各行が「その症状はどの層の話か」に答えるので、そこから該当ページに降りられる。
+
+以下は層の順に並べた全ページの目次で、上から順に読めるようになっている。各ページの冒頭には前提になるページへのリンクを置いたので、途中から入っても遡れる。
+
 ## 読む順番
 
-前提 — データベースの基礎:
+前提 — 用語と DB の基礎:
 
+- [用語集 — THD・latch・mtr が指すもの](./glossary/)
+- [ソースの読み方 — 1 つのツリーに 2 つの方言がある](./reading-mysql-source/)
 - [ページとバッファ — ディスクはブロック単位でしか読めない](./page-and-buffer/)
 - [B+tree — 点検索と範囲検索を 1 つの構造で](./btree-basics/)
 - [WAL — ページを書く前にログを書く](./wal-and-recovery-basics/)

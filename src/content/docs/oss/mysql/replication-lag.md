@@ -6,6 +6,8 @@ sidebar:
   order: 91
 ---
 
+> **前提**: [applier と並列適用](./applier-and-mta/) / [dump thread と receiver](./dump-thread-and-receiver/)
+
 ## 何を学んだか
 
 `SHOW REPLICA STATUS` の `Seconds_Behind_Source` は、名前から想像されるような「source の最新状態から何秒遅れているか」ではない。実体は 3 行の引き算だ。
@@ -40,6 +42,18 @@ flowchart TD
 **0 に到達する経路が 2 本ある**のがこの図の要点だ。片方は「applier が receiver に追いついた」、もう片方は「タイムスタンプの材料がない」で、表示上は区別できない。
 
 正しく測るには、遅延を **receiver lag** (source → relay log) と **applier lag** (relay log → 適用完了) に分け、`performance_schema` の timestamp 列を使う。
+
+## なぜそうなっているか
+
+**`Seconds_Behind_Source` が source と直接比較していないのは、レプリカが source の現在時刻を知らないからだ。** 知る手段は接続時の `SELECT UNIX_TIMESTAMP()` しかなく、それを毎秒やればレプリカ台数ぶんのクエリが source に飛ぶ。**「イベントに埋め込まれた時刻」と「自分の時計」の差で近似する**というのが、追加コストゼロで作れる唯一の指標だった。
+
+**「追いついた」の判定を receiver との比較にしているのも同じ制約から来ている。** applier が「relay log の末尾に到達した」ことは自分で分かるが、「source の末尾に到達した」ことは分からない。**receiver が遅れているケースを検出する能力を、この指標は構造的に持っていない。**
+
+**`last_master_timestamp == 0` を「追いついたとみなす」に倒したのは、NULL より 0 のほうが監視しやすいという判断だろう。** コメントが `an "impossible" timestamp 1970` と書いているとおり、0 は「値がない」を表すセンチネルとして使われている。しかし表示上は「遅延ゼロ」と区別がつかない。**この 1 行が、`Seconds_Behind_Source` を監視指標として信用できなくしている最大の原因だ。**
+
+**MTA でチェックポイント単位でしか更新しないのは、GAQ の先頭が「本当に処理し終わった位置」だからだ。** worker 3 が worker 1 より先に完了しても、worker 1 が終わっていなければ「ここまで終わった」とは言えない。**GAQ の先頭の時刻が、レプリカが胸を張れる唯一の位置**になる。副作用として、先頭に居座る巨大トランザクションが指標を凍らせる。
+
+**`performance_schema` 側の timestamp が source 由来の値を持っているのは、この構造的な欠陥への後付けの答えだ。** `Gtid_log_event` に `original_commit_timestamp` と `immediate_commit_timestamp` を入れたのは MySQL 8.0 からで、レプリカ側の時計と補正値に依存しない遅延測定を可能にするためだった。**`Seconds_Behind_Source` は互換のために残っているレガシー指標**と考えるのが正しい。
 
 ## ソースコードのどこか
 
@@ -246,18 +260,6 @@ WHERE APPLYING_TRANSACTION <> '';
 ```
 
 `ORIGINAL_COMMIT_TIMESTAMP` は source の時計、`END_APPLY_TIMESTAMP` はレプリカの時計なので、この 2 つの差にはやはり時計のずれが乗る。**ただし `Seconds_Behind_Source` と違って「1 回測ったきりの補正値」は挟まらない**ので、NTP が動いていれば素直な値になる。`START_APPLY` と `END_APPLY` の差はレプリカ内で完結するので、時計のずれの影響を受けない。
-
-## なぜそうなっているか
-
-**`Seconds_Behind_Source` が source と直接比較していないのは、レプリカが source の現在時刻を知らないからだ。** 知る手段は接続時の `SELECT UNIX_TIMESTAMP()` しかなく、それを毎秒やればレプリカ台数ぶんのクエリが source に飛ぶ。**「イベントに埋め込まれた時刻」と「自分の時計」の差で近似する**というのが、追加コストゼロで作れる唯一の指標だった。
-
-**「追いついた」の判定を receiver との比較にしているのも同じ制約から来ている。** applier が「relay log の末尾に到達した」ことは自分で分かるが、「source の末尾に到達した」ことは分からない。**receiver が遅れているケースを検出する能力を、この指標は構造的に持っていない。**
-
-**`last_master_timestamp == 0` を「追いついたとみなす」に倒したのは、NULL より 0 のほうが監視しやすいという判断だろう。** コメントが `an "impossible" timestamp 1970` と書いているとおり、0 は「値がない」を表すセンチネルとして使われている。しかし表示上は「遅延ゼロ」と区別がつかない。**この 1 行が、`Seconds_Behind_Source` を監視指標として信用できなくしている最大の原因だ。**
-
-**MTA でチェックポイント単位でしか更新しないのは、GAQ の先頭が「本当に処理し終わった位置」だからだ。** worker 3 が worker 1 より先に完了しても、worker 1 が終わっていなければ「ここまで終わった」とは言えない。**GAQ の先頭の時刻が、レプリカが胸を張れる唯一の位置**になる。副作用として、先頭に居座る巨大トランザクションが指標を凍らせる。
-
-**`performance_schema` 側の timestamp が source 由来の値を持っているのは、この構造的な欠陥への後付けの答えだ。** `Gtid_log_event` に `original_commit_timestamp` と `immediate_commit_timestamp` を入れたのは MySQL 8.0 からで、レプリカ側の時計と補正値に依存しない遅延測定を可能にするためだった。**`Seconds_Behind_Source` は互換のために残っているレガシー指標**と考えるのが正しい。
 
 ## どう活かすか
 

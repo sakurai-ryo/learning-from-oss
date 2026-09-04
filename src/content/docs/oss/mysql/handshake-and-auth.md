@@ -6,6 +6,8 @@ sidebar:
   order: 13
 ---
 
+> **前提**: [接続層](./connection-layer/)
+
 ## 何を学んだか
 
 MySQL の握手には 4 つの性質がある。
@@ -56,6 +58,16 @@ sequenceDiagram
         S->>C: OK パケット
     end
 ```
+
+## なぜそうなっているか
+
+**サーバから話し始めるのは、nonce をサーバが決める必要があるからだ。** チャレンジ・レスポンス方式である以上、チャレンジはサーバが出す。ついでにここで server_version と capability flag を送っておけば、クライアントは 1 回の往復で「相手が何をサポートしているか」を知って自分の応答の形を決められる。TLS を後から張れるのも、最初の 1 パケットで capability を交換してあるからだ。
+
+**プラグインの交渉が「やり直し」になるのは、ユーザ名がパスワードより後に来るという順序問題を解いていないからだ。** 握手の 1 パケット目でユーザ名を先に貰えれば、正しいプラグインで nonce を出せる。だが 1 パケット目はサーバが送るので、その時点ではユーザ名がない。クライアントの HandshakeResponse に「ユーザ名 + 既定プラグインで作ったハッシュ」を詰めさせ、ハズレならやり直す、という設計はプロトコルの往復を最短にしようとした結果で、キャッシュ (`cached_client_reply`) で当たりの場合だけ救っている。
+
+**`caching_sha2_password` のキャッシュは「SHA-256 の反復回数を毎回払わないため」にある。** ディスクに置くハッシュは意図的に遅く、`DEFAULT_STORED_DIGEST_ROUNDS` は `ROUNDS_DEFAULT` = 5000 回だ ([`i_sha2_password.h#L71`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/auth/i_sha2_password.h#L71)、[`crypt_genhash_impl.h#L30`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/include/crypt_genhash_impl.h#L30))。対してキャッシュに載る fast 用のダイジェストは **`DEFAULT_FAST_DIGEST_ROUNDS = 2`** ([L48](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/auth/i_sha2_password.h#L48))。5000 対 2 という比が、fast auth の速さの正体だ。**永続化しないのは、fast 用のダイジェストが漏れるとそれだけで認証を通せてしまうからで、**「メモリにしか置かない」という制約とセットで初めて成立する。再起動でキャッシュが飛ぶのは、この設計のコストとして受け入れられている。
+
+**平文パスワードを full authentication で要求するのは、キャッシュを作るために元のパスワードが要るからだ。** `mysql_native_password` は「パスワードの SHA1 の SHA1」をサーバに置いておけばチャレンジ・レスポンスが成立する。`caching_sha2_password` は salt 付きの遅いハッシュなので、チャレンジ・レスポンスだけでは検証できない。だから初回は平文が要り、それを守るために TLS か RSA が要る。**「安全でない経路のときだけ RSA を挟む」という条件分岐が入るのは、この必要性から来ている。**
 
 ## ソースコードのどこか
 
@@ -367,16 +379,6 @@ if (pluginOptions.serverPublicKey) {
 ```
 
 `onServerPublicKey` コールバックで受け取った鍵を保存しておき、次回以降 `serverPublicKey` に渡す、というのが mysql2 の推奨パターンになっている。
-
-## なぜそうなっているか
-
-**サーバから話し始めるのは、nonce をサーバが決める必要があるからだ。** チャレンジ・レスポンス方式である以上、チャレンジはサーバが出す。ついでにここで server_version と capability flag を送っておけば、クライアントは 1 回の往復で「相手が何をサポートしているか」を知って自分の応答の形を決められる。TLS を後から張れるのも、最初の 1 パケットで capability を交換してあるからだ。
-
-**プラグインの交渉が「やり直し」になるのは、ユーザ名がパスワードより後に来るという順序問題を解いていないからだ。** 握手の 1 パケット目でユーザ名を先に貰えれば、正しいプラグインで nonce を出せる。だが 1 パケット目はサーバが送るので、その時点ではユーザ名がない。クライアントの HandshakeResponse に「ユーザ名 + 既定プラグインで作ったハッシュ」を詰めさせ、ハズレならやり直す、という設計はプロトコルの往復を最短にしようとした結果で、キャッシュ (`cached_client_reply`) で当たりの場合だけ救っている。
-
-**`caching_sha2_password` のキャッシュは「SHA-256 の反復回数を毎回払わないため」にある。** ディスクに置くハッシュは意図的に遅く、`DEFAULT_STORED_DIGEST_ROUNDS` は `ROUNDS_DEFAULT` = 5000 回だ ([`i_sha2_password.h#L71`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/auth/i_sha2_password.h#L71)、[`crypt_genhash_impl.h#L30`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/include/crypt_genhash_impl.h#L30))。対してキャッシュに載る fast 用のダイジェストは **`DEFAULT_FAST_DIGEST_ROUNDS = 2`** ([L48](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/auth/i_sha2_password.h#L48))。5000 対 2 という比が、fast auth の速さの正体だ。**永続化しないのは、fast 用のダイジェストが漏れるとそれだけで認証を通せてしまうからで、**「メモリにしか置かない」という制約とセットで初めて成立する。再起動でキャッシュが飛ぶのは、この設計のコストとして受け入れられている。
-
-**平文パスワードを full authentication で要求するのは、キャッシュを作るために元のパスワードが要るからだ。** `mysql_native_password` は「パスワードの SHA1 の SHA1」をサーバに置いておけばチャレンジ・レスポンスが成立する。`caching_sha2_password` は salt 付きの遅いハッシュなので、チャレンジ・レスポンスだけでは検証できない。だから初回は平文が要り、それを守るために TLS か RSA が要る。**「安全でない経路のときだけ RSA を挟む」という条件分岐が入るのは、この必要性から来ている。**
 
 ## どう活かすか
 

@@ -6,6 +6,8 @@ sidebar:
   order: 95
 ---
 
+> **前提**: [プロセスとスレッド](./thread-model/)
+
 ## 何を学んだか
 
 `performance_schema` は「メモリ上にあるテーブル」というより、**サーバ全体に埋め込まれた計装点と、その結果を貯めた固定サイズのバッファ群**だ。SQL から見える 113 個のテーブルは、そのバッファを読む view にすぎない。
@@ -31,6 +33,44 @@ flowchart TD
 ```
 
 もう 1 つの読みどころは、メモリ量の決め方だ。`performance_schema_*` のサイジング変数の多くは既定値が `-1` (`PFS_AUTOSCALE_VALUE`) で、これは「起動時に他の変数から決める」という意味になる。決め方は連続的な計算ではなく、**small / medium / large の 3 つのハードコードされたプロファイルから 1 つ選ぶ**だけだ。
+
+## なぜそうなっているか
+
+### なぜ判定を 3 段に分けたか
+
+計装点は MySQL のソース全体に数万か所ある。すべてを 1 個のグローバルフラグで切り替えるだけなら簡単だが、それでは「特定の mutex だけ見る」ができない。逆に毎回テーブルを引いていたら遅すぎる。
+
+そこで、判定に必要な情報を**判定する場所ごとに一番近い場所へ複製**してある。
+
+- `PSI_instr::m_enabled` — 計装点オブジェクトの中。呼び出し側から 1 回のロードで読める
+- `flag_*` — グローバル変数。`PFS_ALIGNED` が付いていて false sharing を避けている
+- `PFS_thread::m_enabled` — スレッドローカルの `THR_PFS` から辿る
+
+`setup_instruments` を `UPDATE` すると、対応する全インスタンスの `m_enabled` を書き換えて回る (`update_instruments_derived_flags`)。読む側を速くするために、書く側でコストを払う設計だ。
+
+### なぜ自動サイジングが 3 択なのか
+
+「メモリを N% 使う」のような連続的な式にすると、`my.cnf` を少し変えるたびにメモリ使用量が変わり、再現性がなくなる。3 つの離散的なプロファイルなら、閾値をまたがない限り同じ値になる。
+
+そして選択のヒントに使う 3 変数 (`max_connections`、`table_definition_cache`、`table_open_cache`) は、いずれも「このサーバがどれくらいの規模を想定しているか」の代理指標だ。コメントもそう書いている — 既定のままなら開発機、2 倍程度なら中規模、それ以上なら本番。
+
+### なぜ `SHOW PROCESSLIST` に 2 実装あるのか
+
+`performance_schema_show_processlist` ([`sql/sys_vars.cc#L572`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L572)) を `ON` にすると、`SHOW PROCESSLIST` の実装が P_S の `processlist` テーブル側に切り替わる。既定は `OFF` だ。
+
+```cpp title="sql/sys_vars.cc"
+static Sys_var_bool Sys_pfs_processlist(
+    "performance_schema_show_processlist",
+    "Default startup value to enable SHOW PROCESSLIST "
+    "in the performance schema.",
+    GLOBAL_VAR(pfs_processlist_enabled), CMD_LINE(OPT_ARG), DEFAULT(false),
+```
+
+理由は `LOCK_thd_data` の競合だ。従来の実装は全 `THD` を走査して 1 本ずつ mutex を取るので、接続数が多いサーバでは `SHOW PROCESSLIST` 自体がスループットを落とす。P_S 版はスレッドごとに用意された P_S のバッファを読むので、実行中のセッションを止めない。変数を更新すると deprecation の警告が出る ([L560](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L560))。
+
+> When it is removed, SHOW PROCESSLIST will always use the performance schema implementation.
+
+いずれ P_S 版に一本化される。
 
 ## ソースコードのどこか
 
@@ -228,44 +268,6 @@ struct PFS_digest_key {
 > A ABI change that causes a build to fail will always be accompanied by new canons (.out files). ... A developer with a justified API change will then do a `mv <build directory>/abi_check.out include/mysql/plugin.pp` to replace the old canons with the new ones.
 
 つまり `.h.pp` を読んでも P_S の実装は何も分からない。「この構造体レイアウトを勝手に変えるな」という宣言だ。P_S の計装点はプラグインやストレージエンジンから呼ばれるので、構造体を変えると既存のバイナリが壊れる。
-
-## なぜそうなっているか
-
-### なぜ判定を 3 段に分けたか
-
-計装点は MySQL のソース全体に数万か所ある。すべてを 1 個のグローバルフラグで切り替えるだけなら簡単だが、それでは「特定の mutex だけ見る」ができない。逆に毎回テーブルを引いていたら遅すぎる。
-
-そこで、判定に必要な情報を**判定する場所ごとに一番近い場所へ複製**してある。
-
-- `PSI_instr::m_enabled` — 計装点オブジェクトの中。呼び出し側から 1 回のロードで読める
-- `flag_*` — グローバル変数。`PFS_ALIGNED` が付いていて false sharing を避けている
-- `PFS_thread::m_enabled` — スレッドローカルの `THR_PFS` から辿る
-
-`setup_instruments` を `UPDATE` すると、対応する全インスタンスの `m_enabled` を書き換えて回る (`update_instruments_derived_flags`)。読む側を速くするために、書く側でコストを払う設計だ。
-
-### なぜ自動サイジングが 3 択なのか
-
-「メモリを N% 使う」のような連続的な式にすると、`my.cnf` を少し変えるたびにメモリ使用量が変わり、再現性がなくなる。3 つの離散的なプロファイルなら、閾値をまたがない限り同じ値になる。
-
-そして選択のヒントに使う 3 変数 (`max_connections`、`table_definition_cache`、`table_open_cache`) は、いずれも「このサーバがどれくらいの規模を想定しているか」の代理指標だ。コメントもそう書いている — 既定のままなら開発機、2 倍程度なら中規模、それ以上なら本番。
-
-### なぜ `SHOW PROCESSLIST` に 2 実装あるのか
-
-`performance_schema_show_processlist` ([`sql/sys_vars.cc#L572`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L572)) を `ON` にすると、`SHOW PROCESSLIST` の実装が P_S の `processlist` テーブル側に切り替わる。既定は `OFF` だ。
-
-```cpp title="sql/sys_vars.cc"
-static Sys_var_bool Sys_pfs_processlist(
-    "performance_schema_show_processlist",
-    "Default startup value to enable SHOW PROCESSLIST "
-    "in the performance schema.",
-    GLOBAL_VAR(pfs_processlist_enabled), CMD_LINE(OPT_ARG), DEFAULT(false),
-```
-
-理由は `LOCK_thd_data` の競合だ。従来の実装は全 `THD` を走査して 1 本ずつ mutex を取るので、接続数が多いサーバでは `SHOW PROCESSLIST` 自体がスループットを落とす。P_S 版はスレッドごとに用意された P_S のバッファを読むので、実行中のセッションを止めない。変数を更新すると deprecation の警告が出る ([L560](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L560))。
-
-> When it is removed, SHOW PROCESSLIST will always use the performance schema implementation.
-
-いずれ P_S 版に一本化される。
 
 ## どう活かすか
 

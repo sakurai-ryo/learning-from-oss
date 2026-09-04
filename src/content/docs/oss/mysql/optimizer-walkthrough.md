@@ -6,6 +6,8 @@ sidebar:
   order: 25
 ---
 
+> **前提**: [パーサとリゾルバ](./parser-walkthrough/) / [名前解決と Item ツリー](./name-resolution-and-items/)
+
 ## この層の責務
 
 入力は解決済みの `Query_block`、出力は `AccessPath` の木だ。それだけである。

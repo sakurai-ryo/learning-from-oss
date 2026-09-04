@@ -6,6 +6,8 @@ sidebar:
   order: 87
 ---
 
+> **前提**: [binlog イベント](./binlog-events/) / [2PC とグループコミット](./two-phase-commit-and-group-commit/)
+
 ## 何を学んだか
 
 レプリケーションの位置を「ファイル名 + オフセット」で表すと、source が切り替わった瞬間に意味を失う。別のサーバの binlog では同じ位置に別のトランザクションがある。GTID はこれを **トランザクション自身に付いた名前**に置き換える。
@@ -18,6 +20,20 @@ sidebar:
 タグが空なら従来どおり `UUID:GNO`、タグがあれば `UUID:TAG:GNO` と表示される。**この tagged GTID が 8.4 の新機能で、そのために `Sid_map` が `Tsid_map` に改名された** ([`sql/rpl_gtid.h#L749`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/rpl_gtid.h#L749))。8.0 の記事で `Sid_map` を探しても見つからない。イベント種別も `GTID_TAGGED_LOG_EVENT = 42` が追加された。
 
 もう 1 つの要点は**採番のタイミング**だ。GNO は文の実行中でもトランザクション開始時でもなく、**グループコミットの flush ステージで、キューの順序どおりに**割り当てられる。だから GNO の順序 = binlog に現れる順序になる。
+
+## なぜそうなっているか
+
+**GNO の採番を flush ステージまで遅らせているのは、番号の順序と binlog の順序を一致させるためだ。** トランザクション開始時に採番すると、長いトランザクションが小さい番号を持ったまま後からコミットして、binlog 上の順序と GNO の順序がずれる。ずれると `gtid_executed` に穴が空き、`Gtid_set` の区間が分裂する。**flush ステージのキュー順に採番すれば、`executed_gtids` は「1 本の区間が伸びていくだけ」で済む。**
+
+**ロールバックで GNO を返却するのも同じ理由だ。** AUTO_INCREMENT は飛んでも実害がないが、GNO が飛ぶと区間が 2 本に割れる。`next_free_gno` を下げ直すコードは、この 1 点のためだけに存在している。
+
+**`mysql.gtid_executed` が必要なのは、binlog を purge しても `gtid_executed` を復元できるようにするためだ。** 起動時に `executed_gtids` を組み立てる材料は「残っている binlog ファイルの `Previous_gtids` + 最後のファイルのイベント」だが、これでは purge 済みのぶんが失われる。**テーブルに書いておけば、binlog を全部消してもサーバは自分が何を実行したかを覚えている。**
+
+**binlog 有効時にローテート単位でしか書かないのは、コミットパスに DML を挟みたくないからだ。** トランザクションごとに `mysql.gtid_executed` へ 1 行書くと、それ自体が InnoDB のトランザクションになり、コミットのコストが倍近くなる。binlog があれば「まだテーブルに書いていないぶん」は binlog から復元できるので、書くのを遅らせられる。
+
+**`Previous_gtids_log_event` は「ファイル単位のインデックス」だ。** binlog ファイルには目次がないので ([binlog イベント](./binlog-events/))、「この GTID がどのファイルにあるか」を知るにはファイルを全部舐めるしかない。先頭に「ここまでの累積」を置いておけば、**ファイルを開いて 1 イベント読むだけで二分探索的に絞り込める**。
+
+**auto-position のスキップを source 側でやるのは、レプリカ側に判断材料を持たせないためだ。** レプリカが受け取ってから捨てる方式にすると、ネットワークに無駄が乗るうえ、レプリカが「捨ててよいか」を判断するために source の状態を知る必要が出る。source は自分の binlog とレプリカが送ってきた集合の両方を持っているので、**判断できる唯一の場所が source だ**。
 
 ## ソースコードのどこか
 
@@ -182,20 +198,6 @@ sequenceDiagram
 `WAIT_FOR_EXECUTED_GTID_SET()` は [`Item_wait_for_executed_gtid_set` (`sql/item_gtid_func.h#L42`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/item_gtid_func.h#L42) で、[`Gtid_state::wait_for_gtid_set` (`rpl_gtid_state.cc#L305`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/rpl_gtid_state.cc#L305) を呼ぶ。SIDNO ごとの条件変数で待ち、GTID が `executed_gtids` に入るたびに `broadcast_sidno` で起こされる。
 
 `session_track_gtids` ([`sys_vars.cc#L1614`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L1614)、既定 `OFF`) を `OWN_GTID` にすると、**OK パケットに「今コミットしたトランザクションの GTID」が乗って返ってくる**。クライアントはそれを保持して、次にレプリカへ読みに行くときに `WAIT_FOR_EXECUTED_GTID_SET` に渡せる。
-
-## なぜそうなっているか
-
-**GNO の採番を flush ステージまで遅らせているのは、番号の順序と binlog の順序を一致させるためだ。** トランザクション開始時に採番すると、長いトランザクションが小さい番号を持ったまま後からコミットして、binlog 上の順序と GNO の順序がずれる。ずれると `gtid_executed` に穴が空き、`Gtid_set` の区間が分裂する。**flush ステージのキュー順に採番すれば、`executed_gtids` は「1 本の区間が伸びていくだけ」で済む。**
-
-**ロールバックで GNO を返却するのも同じ理由だ。** AUTO_INCREMENT は飛んでも実害がないが、GNO が飛ぶと区間が 2 本に割れる。`next_free_gno` を下げ直すコードは、この 1 点のためだけに存在している。
-
-**`mysql.gtid_executed` が必要なのは、binlog を purge しても `gtid_executed` を復元できるようにするためだ。** 起動時に `executed_gtids` を組み立てる材料は「残っている binlog ファイルの `Previous_gtids` + 最後のファイルのイベント」だが、これでは purge 済みのぶんが失われる。**テーブルに書いておけば、binlog を全部消してもサーバは自分が何を実行したかを覚えている。**
-
-**binlog 有効時にローテート単位でしか書かないのは、コミットパスに DML を挟みたくないからだ。** トランザクションごとに `mysql.gtid_executed` へ 1 行書くと、それ自体が InnoDB のトランザクションになり、コミットのコストが倍近くなる。binlog があれば「まだテーブルに書いていないぶん」は binlog から復元できるので、書くのを遅らせられる。
-
-**`Previous_gtids_log_event` は「ファイル単位のインデックス」だ。** binlog ファイルには目次がないので ([binlog イベント](./binlog-events/))、「この GTID がどのファイルにあるか」を知るにはファイルを全部舐めるしかない。先頭に「ここまでの累積」を置いておけば、**ファイルを開いて 1 イベント読むだけで二分探索的に絞り込める**。
-
-**auto-position のスキップを source 側でやるのは、レプリカ側に判断材料を持たせないためだ。** レプリカが受け取ってから捨てる方式にすると、ネットワークに無駄が乗るうえ、レプリカが「捨ててよいか」を判断するために source の状態を知る必要が出る。source は自分の binlog とレプリカが送ってきた集合の両方を持っているので、**判断できる唯一の場所が source だ**。
 
 ## どう活かすか
 

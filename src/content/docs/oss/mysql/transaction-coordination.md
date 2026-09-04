@@ -6,6 +6,8 @@ sidebar:
   order: 44
 ---
 
+> **前提**: [handler](./handler-walkthrough/) / [UPDATE の一生](./life-of-an-update/)
+
 ## 何を学んだか
 
 「トランザクション」と呼んでいるものが、`sql/` の中では 2 つある。
@@ -60,6 +62,16 @@ sequenceDiagram
     H->>I: innobase_commit(commit_trx=true) → trx_commit
     T->>T: dd_client()->commit_modified_objects()
 ```
+
+## なぜそうなっているか
+
+**参加者を遅延登録にしたのは、「触っていないエンジンをコミットの経路に入れない」ためだ。** MySQL は複数のエンジンを同時に載せられる。`BEGIN` の時点で全エンジンを起こすと、使わないエンジンにも文ごとのコールバックが飛ぶ。エンジン側から名乗り出る形にすれば、参加者は実際に触ったものだけになる。**その代償が、`BEGIN` にトランザクション開始の意味がなくなったことだ。** `SHOW ENGINE INNODB STATUS` に出てくる `trx` が `BEGIN` の直後には存在しないのはこのためで、[performance_schema のトランザクション計装](./performance-schema-internals/)も `trans_begin` と `trans_register_ha` の 2 箇所に分かれてしまっている。
+
+**statement transaction を InnoDB 側でセーブポイントにしたのは、行ロックを解放したくないからだ。** 文が失敗したとき、その文の変更だけを消したいが、ロックまで消すと直列化可能性が壊れる。undo レコード番号で切り戻すやり方なら、undo だけを逆適用してロックはそのまま残せる。**「失敗した `INSERT` でもロックは残る」という直感に反する挙動は、この設計の直接の帰結だ** ([INSERT のロックのページ](./insert-and-duplicate-check/))。
+
+**`autocommit` を「フラグを見て文の終わりに本物のコミットとして扱う」形にしたのは、autocommit 用の別経路を作らないためだ。** `ha_commit_trans(thd, all=false)` は autocommit のときも `BEGIN` の中でも同じ関数を通り、`is_real_trans` の 1 行だけが違う。InnoDB 側も同じ判定を `will_commit` としてもう一度書いている。**同じ条件を 2 箇所で独立に評価している**のは重複だが、SQL 層とエンジンが疎結合であることの代償でもある。
+
+**`FLUSH TABLES WITH READ LOCK` を MDL の名前空間で表現したのは、コミットを 1 点で止める必要があるからだ。** テーブルロックだけでは、既に開いたテーブルに対する進行中のコミットを止められない。`MDL_key::COMMIT` という架空のオブジェクトに全書き込みトランザクションが IX ロックを取る形にすれば、FTWRL 側は X ロックを 1 回取るだけで全員を待たせられる。
 
 ## ソースコードのどこか
 
@@ -388,16 +400,6 @@ DDL が現在のトランザクションを閉じるのは、コマンドごと�
 ```
 
 **`DROP TEMPORARY TABLE` は暗黙コミットを起こさない。** `CREATE TABLE ... SELECT` も、`START TRANSACTION` の中で実行されると `m_transactional_ddl` が立って暗黙コミットを飛ばす。
-
-## なぜそうなっているか
-
-**参加者を遅延登録にしたのは、「触っていないエンジンをコミットの経路に入れない」ためだ。** MySQL は複数のエンジンを同時に載せられる。`BEGIN` の時点で全エンジンを起こすと、使わないエンジンにも文ごとのコールバックが飛ぶ。エンジン側から名乗り出る形にすれば、参加者は実際に触ったものだけになる。**その代償が、`BEGIN` にトランザクション開始の意味がなくなったことだ。** `SHOW ENGINE INNODB STATUS` に出てくる `trx` が `BEGIN` の直後には存在しないのはこのためで、[performance_schema のトランザクション計装](./performance-schema-internals/)も `trans_begin` と `trans_register_ha` の 2 箇所に分かれてしまっている。
-
-**statement transaction を InnoDB 側でセーブポイントにしたのは、行ロックを解放したくないからだ。** 文が失敗したとき、その文の変更だけを消したいが、ロックまで消すと直列化可能性が壊れる。undo レコード番号で切り戻すやり方なら、undo だけを逆適用してロックはそのまま残せる。**「失敗した `INSERT` でもロックは残る」という直感に反する挙動は、この設計の直接の帰結だ** ([INSERT のロックのページ](./insert-and-duplicate-check/))。
-
-**`autocommit` を「フラグを見て文の終わりに本物のコミットとして扱う」形にしたのは、autocommit 用の別経路を作らないためだ。** `ha_commit_trans(thd, all=false)` は autocommit のときも `BEGIN` の中でも同じ関数を通り、`is_real_trans` の 1 行だけが違う。InnoDB 側も同じ判定を `will_commit` としてもう一度書いている。**同じ条件を 2 箇所で独立に評価している**のは重複だが、SQL 層とエンジンが疎結合であることの代償でもある。
-
-**`FLUSH TABLES WITH READ LOCK` を MDL の名前空間で表現したのは、コミットを 1 点で止める必要があるからだ。** テーブルロックだけでは、既に開いたテーブルに対する進行中のコミットを止められない。`MDL_key::COMMIT` という架空のオブジェクトに全書き込みトランザクションが IX ロックを取る形にすれば、FTWRL 側は X ロックを 1 回取るだけで全員を待たせられる。
 
 ## どう活かすか
 

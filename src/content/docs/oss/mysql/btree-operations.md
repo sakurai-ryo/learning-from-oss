@@ -6,6 +6,8 @@ sidebar:
   order: 51
 ---
 
+> **前提**: [B+tree](./btree-basics/) / [ページの構造](./page-layout/)
+
 ## 何を学んだか
 
 B+tree を更新するときの根本的な問題は「**どこまで latch を取ればいいか分からない**」ことだ。1 レコード挿入するだけなら葉ページ 1 枚の X latch で足りるが、ページが溢れれば分割が起きて親も触る。親も溢れればその親も。最悪 root まで届く。
@@ -33,6 +35,30 @@ flowchart TD
 この形は挿入だけでなく更新にも削除にもある。`btr_cur_optimistic_update` / `btr_cur_pessimistic_update`、`btr_cur_optimistic_delete_func` / `btr_cur_pessimistic_delete`。**楽観パスが `DB_FAIL` を返したら、探索からやり直す**というのが共通の作法だ。
 
 もう 1 つ押さえるべきは、**root ページ番号は木がどれだけ深くなっても変わらない**こと。root が分割されるときは、新しい root を作るのではなく root の中身を追い出す。
+
+## なぜそうなっているか
+
+### なぜ 2 段構えなのか
+
+「木構造が変わるかどうか」は葉ページを見るまで分からない。分からないうちから木全体の latch を取ると、**大多数の挿入 (溢れない挿入) が不必要に直列化する**。
+
+一方で楽観パスの失敗コストは低い。ページはバッファプールに載っているので、やり直しに I/O は要らない。降下のコストが 2 倍になるだけだ。ページが溢れる頻度を考えれば、期待値では圧倒的に得をする。
+
+同じ考え方は他の場所にも出てくる。`btr_cur_optimistic_update` ([L3496](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L3496)) は「更新後のレコードが同じページに収まるか」で分岐するし、`btr_cur_update_in_place` ([L3331](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L3331)) は「レコードのサイズが変わらないか」でさらに手前の高速パスを作っている。
+
+### なぜ latch を降りながら落とすのか
+
+B+tree の降下は根から葉へ一方向なので、**子の latch を取ったら親はもう要らない**。親を保持し続けると、根に近いページの latch が全スレッドの競合点になる。
+
+例外は「変更が親に波及するかもしれない場合」だけで、それを判定するのが `btr_cur_will_modify_tree` だ。判定を保守的にしておけば安全側に倒れる。
+
+### なぜ連番挿入を特別扱いするのか
+
+中央で割ると、連番挿入では左半分は二度と触られない。ページの半分が永久に空くわけで、**テーブルサイズが 2 倍になる**。右詰めにすればほぼ 100% 充填になる。
+
+判定が `PAGE_LAST_INSERT` の一致という乱暴なもの (コメントも `eager heuristics` と認めている) なのは、正確に判定しようとするとコストが見合わないからだ。誤判定しても正しさには影響しない。
+
+「1 件残す」理由もコメントにある。adaptive hash index が「このページの先頭にあるレコードを見るだけで検索位置を決められる」状態を保つためだ ([adaptive hash index](./adaptive-hash-index/))。
 
 ## ソースコードのどこか
 
@@ -303,30 +329,6 @@ limit, merging it to a neighbor is tried */
 セカンダリインデックスとクラスタードインデックスを両方触るときや、悲観パスに切り替えるときは、いったん latch を落として取り直す必要がある。そのための仕組みが `btr_pcur_t` だ。
 
 [`btr_pcur_t::store_position` (`btr0pcur.cc#L42`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0pcur.cc#L42) はカーソル位置を「そのレコードのキーのコピー」として保存し、[`restore_position` (L147)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0pcur.cc#L147) は保存したキーで木を降り直す。**ページ番号やオフセットではなくキーで覚える**ので、その間にページが分割されても正しい位置に戻れる。ただし「そのレコードが消えていたら隣に着地する」ので、呼び出し側は位置がずれた可能性を扱う必要がある。
-
-## なぜそうなっているか
-
-### なぜ 2 段構えなのか
-
-「木構造が変わるかどうか」は葉ページを見るまで分からない。分からないうちから木全体の latch を取ると、**大多数の挿入 (溢れない挿入) が不必要に直列化する**。
-
-一方で楽観パスの失敗コストは低い。ページはバッファプールに載っているので、やり直しに I/O は要らない。降下のコストが 2 倍になるだけだ。ページが溢れる頻度を考えれば、期待値では圧倒的に得をする。
-
-同じ考え方は他の場所にも出てくる。`btr_cur_optimistic_update` ([L3496](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L3496)) は「更新後のレコードが同じページに収まるか」で分岐するし、`btr_cur_update_in_place` ([L3331](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/btr/btr0cur.cc#L3331)) は「レコードのサイズが変わらないか」でさらに手前の高速パスを作っている。
-
-### なぜ latch を降りながら落とすのか
-
-B+tree の降下は根から葉へ一方向なので、**子の latch を取ったら親はもう要らない**。親を保持し続けると、根に近いページの latch が全スレッドの競合点になる。
-
-例外は「変更が親に波及するかもしれない場合」だけで、それを判定するのが `btr_cur_will_modify_tree` だ。判定を保守的にしておけば安全側に倒れる。
-
-### なぜ連番挿入を特別扱いするのか
-
-中央で割ると、連番挿入では左半分は二度と触られない。ページの半分が永久に空くわけで、**テーブルサイズが 2 倍になる**。右詰めにすればほぼ 100% 充填になる。
-
-判定が `PAGE_LAST_INSERT` の一致という乱暴なもの (コメントも `eager heuristics` と認めている) なのは、正確に判定しようとするとコストが見合わないからだ。誤判定しても正しさには影響しない。
-
-「1 件残す」理由もコメントにある。adaptive hash index が「このページの先頭にあるレコードを見るだけで検索位置を決められる」状態を保つためだ ([adaptive hash index](./adaptive-hash-index/))。
 
 ## どう活かすか
 

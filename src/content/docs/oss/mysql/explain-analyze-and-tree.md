@@ -6,6 +6,8 @@ sidebar:
   order: 94
 ---
 
+> **前提**: [AccessPath](./access-path-tree/) / [EXPLAIN の列](./explain-columns/)
+
 ## 何を学んだか
 
 `EXPLAIN FORMAT=TREE` と `EXPLAIN ANALYZE` は別の機能ではない。どちらも [`AccessPath`](./access-path-tree/) の木を再帰的に歩いて `Json_object` を組み立て、それを文字列にする。`FORMAT=JSON` も `explain_json_format_version=2` にすれば同じ `Json_object` を使う。違いは最後の 1 段、**JSON を木の絵に落とすか JSON のまま出すか**だけだ。
@@ -27,6 +29,43 @@ flowchart TD
 ```
 
 もう 1 つ、オプティマイザの途中経過を見る `optimizer_trace` がある。こちらは `AccessPath` とは無関係で、最適化のあいだ中ずっと JSON 文字列を追記していくバッファだ。上限 (`optimizer_trace_max_mem_size`、既定 1MiB) を超えたぶんは**捨てるのではなく数だけ数える**。
+
+## なぜそうなっているか
+
+### 3 つのフォーマットで 1 つの木を共有する理由
+
+`FORMAT=TREE` が入る前、`EXPLAIN` の実装は「TRADITIONAL 用に `qep_row` を埋める」「JSON 用に中間ツリーを作る」の 2 系統に分かれていて、同じ情報を 2 か所で組み立てていた。iterator executor が入って `AccessPath` という単一の計画表現ができたので、**計画そのものを歩けば全フォーマットの元データが作れる**ようになった。
+
+その結果が `Json_object` を中間表現にする構造だ。`Explain_format::ExplainJsonToString()` という 1 個の virtual だけが形式ごとに違い、木の組み立ては共有される。`Explain_format_tree::ExplainPrintTreeNode` ([L2105](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/join_optimizer/explain_access_path.cc#L2105)) がやっているのは、`"operation"` の文字列を取り出してインデントし、`"inputs"` を再帰するだけだ。
+
+```cpp title="sql/join_optimizer/explain_access_path.cc"
+  *explain += "-> ";
+  ...
+  assert(obj->get("operation")->json_type() == enum_json_type::J_STRING);
+  *explain += down_cast<Json_string *>(obj->get("operation"))->value();
+
+  ExplainPrintCosts(obj, explain);
+
+  *explain += children_explain;
+```
+
+つまり TREE 形式は JSON の `operation` フィールドを縦に並べたものにすぎない。TREE で読めない情報は JSON にもない。
+
+### `actual rows` を平均にした理由
+
+nested loop の内側にあるテーブルは、外側の行数ぶん `Init()` し直される。総行数だけを出すと「1 回あたり何行返ってきたか」が分からず、**見積り (`estimated_rows`) と直接比べられない**。`estimated_rows` は `AccessPath::num_output_rows()`、つまり 1 回の実行で返る行数の見積りだからだ。
+
+だから `actual rows` を `loops` で割って、同じ土俵に乗せてある。`rows=1 loops=100000` と `rows=100000 loops=1` は総行数が同じでも、前者は「見積り 1 行が当たっている」で後者は「見積り 1 行が 10 万倍外れている」という意味になる。
+
+### `srv` 側ではなくクライアント側に 1 行で返す理由
+
+iterator ベースの `EXPLAIN` は [`ExplainIterator` (`sql/opt_explain.cc#L2105`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L2105) が結果を送る。列は `EXPLAIN` という名前の 1 列だけで、木全体が**改行入りの 1 個の文字列**として 1 行で返る。
+
+```cpp title="sql/opt_explain.cc"
+    Item *item = new Item_empty_string("EXPLAIN", 78, system_charset_info);
+```
+
+木構造をリレーショナルな表に平らにする方法がないので、テキストのまま返すことにしてある。8.4 で入った `EXPLAIN INTO @var` は、この文字列をクライアントに送る代わりにユーザ変数に入れる。`Query_result_explain_into_var` に差し替えるだけの分岐で実現されている。
 
 ## ソースコードのどこか
 
@@ -224,43 +263,6 @@ ST_FIELD_INFO optimizer_trace_info[] = {
 `optimizer_trace_max_mem_size` は[セッション変数で既定 1MiB](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sys_vars.cc#L3410) だが、これは **1 文ぶんの上限ではなくセッションが保持しているトレース全部の合計**だ。[`allowed_mem_size_for_current_stmt` (`sql/opt_trace.cc#L1078`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_trace.cc#L1078) が、保存済みトレースの実サイズを引いた残りを今の文に割り当てる。`optimizer_trace_limit` (既定 1) を増やしてトレースを溜めると、1 文あたりに使える枠が減る。
 
 `INSUFFICIENT_PRIVILEGES` が立つと `TRACE` は空文字列になる。ビューやストアドプログラムの定義者と実行者が違い、定義を見る権限がないときの安全弁だ (`opt_trace_disable_if_no_view_access` など)。
-
-## なぜそうなっているか
-
-### 3 つのフォーマットで 1 つの木を共有する理由
-
-`FORMAT=TREE` が入る前、`EXPLAIN` の実装は「TRADITIONAL 用に `qep_row` を埋める」「JSON 用に中間ツリーを作る」の 2 系統に分かれていて、同じ情報を 2 か所で組み立てていた。iterator executor が入って `AccessPath` という単一の計画表現ができたので、**計画そのものを歩けば全フォーマットの元データが作れる**ようになった。
-
-その結果が `Json_object` を中間表現にする構造だ。`Explain_format::ExplainJsonToString()` という 1 個の virtual だけが形式ごとに違い、木の組み立ては共有される。`Explain_format_tree::ExplainPrintTreeNode` ([L2105](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/join_optimizer/explain_access_path.cc#L2105)) がやっているのは、`"operation"` の文字列を取り出してインデントし、`"inputs"` を再帰するだけだ。
-
-```cpp title="sql/join_optimizer/explain_access_path.cc"
-  *explain += "-> ";
-  ...
-  assert(obj->get("operation")->json_type() == enum_json_type::J_STRING);
-  *explain += down_cast<Json_string *>(obj->get("operation"))->value();
-
-  ExplainPrintCosts(obj, explain);
-
-  *explain += children_explain;
-```
-
-つまり TREE 形式は JSON の `operation` フィールドを縦に並べたものにすぎない。TREE で読めない情報は JSON にもない。
-
-### `actual rows` を平均にした理由
-
-nested loop の内側にあるテーブルは、外側の行数ぶん `Init()` し直される。総行数だけを出すと「1 回あたり何行返ってきたか」が分からず、**見積り (`estimated_rows`) と直接比べられない**。`estimated_rows` は `AccessPath::num_output_rows()`、つまり 1 回の実行で返る行数の見積りだからだ。
-
-だから `actual rows` を `loops` で割って、同じ土俵に乗せてある。`rows=1 loops=100000` と `rows=100000 loops=1` は総行数が同じでも、前者は「見積り 1 行が当たっている」で後者は「見積り 1 行が 10 万倍外れている」という意味になる。
-
-### `srv` 側ではなくクライアント側に 1 行で返す理由
-
-iterator ベースの `EXPLAIN` は [`ExplainIterator` (`sql/opt_explain.cc#L2105`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L2105) が結果を送る。列は `EXPLAIN` という名前の 1 列だけで、木全体が**改行入りの 1 個の文字列**として 1 行で返る。
-
-```cpp title="sql/opt_explain.cc"
-    Item *item = new Item_empty_string("EXPLAIN", 78, system_charset_info);
-```
-
-木構造をリレーショナルな表に平らにする方法がないので、テキストのまま返すことにしてある。8.4 で入った `EXPLAIN INTO @var` は、この文字列をクライアントに送る代わりにユーザ変数に入れる。`Query_result_explain_into_var` に差し替えるだけの分岐で実現されている。
 
 ## どう活かすか
 

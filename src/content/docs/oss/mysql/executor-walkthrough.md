@@ -6,6 +6,8 @@ sidebar:
   order: 35
 ---
 
+> **前提**: [AccessPath](./access-path-tree/)
+
 ## この層の責務
 
 オプティマイザが出した `AccessPath` の木は、実行できるものではない。ただのデータ構造だ ([AccessPath のページ](./access-path-tree/))。エグゼキュータの仕事は 2 つある。

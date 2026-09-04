@@ -6,6 +6,8 @@ sidebar:
   order: 99
 ---
 
+> **前提**: [バッファプール](./buffer-pool-walkthrough/) / [redo ログ](./redo-log-walkthrough/)
+
 ## 何を学んだか
 
 Aurora MySQL は「MySQL を書き直したもの」ではない。**置き換わったのは InnoDB のいちばん下、ページをディスクに書く部分だけ**で、その上は驚くほどそのまま残っている。

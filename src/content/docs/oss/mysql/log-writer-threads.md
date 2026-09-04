@@ -6,6 +6,8 @@ sidebar:
   order: 69
 ---
 
+> **前提**: [redo ログ](./redo-log-walkthrough/) / [mini-transaction](./mini-transaction/)
+
 ## 何を学んだか
 
 redo の書き込みには 6 本のスレッドが関わる。名前はそのまま `Srv_threads` の `m_log_writer` などのフィールドになっていて、[スレッドモデルのページ](./thread-model/)で見た通り `log0log.cc` 側で作られる。
@@ -60,6 +62,16 @@ sequenceDiagram
     end
     U->>U: 待ち解除。COMMIT が返る
 ```
+
+## なぜそうなっているか
+
+**書く人と `fsync` する人を分けたのは、両者の待ち時間の性質が違うからだ。** `write(2)` はページキャッシュへのコピーで、普通はマイクロ秒で返る。`fsync` はデバイス次第でミリ秒かかる。1 本で回すと、`fsync` の間に溜まった redo を誰も `write` できず、次の `fsync` の対象が小さくなって効率が落ちる。分けておけば、`fsync` している間に writer が次の分を書き進め、**次の `fsync` 1 回でより多くのコミットをまとめて確定できる**。これは binlog のグループコミット ([2PC のページ](./two-phase-commit-and-group-commit/)) と同じ発想で、redo 側では明示的なステージを持たずスレッドの分離だけで実現している。
+
+**通知を別スレッドに出したのは、扇形展開のコストが本体の critical path に乗るのを避けるためだ。** 1 回の `fsync` で数千スレッドが起きうる。`os_event_set` を数千回呼ぶ間 `log_flusher_mutex` を持っていると、その分だけ次の `fsync` が遅れる。
+
+**ログバッファへの書き込みを lock-free にしたのは、8.0 で最も効いた変更の 1 つだ。** 5.7 までは `log_sys->mutex` の下で「予約 → コピー → dirty page 登録」を全部やっていた。コア数が増えるとここが単一のボトルネックになる。8.0 では atomic な予約 1 回に縮め、順序の回復を `Link_buf` に押し出した。**代償が「flush list の順序が緩む」ことで**、チェックポイント側が近似値を扱うようになった ([mini-transaction のページ](./mini-transaction/))。
+
+**`=2` を「1 秒分のデータを失う」と要約するのは雑すぎる。** 失うのは「`fsync` されていない `write(2)` 済みのデータ」で、これが消える条件は OS がページキャッシュを吐き出す前に落ちることだ。mysqld の `SIGSEGV` や OOM Killer では失われない。**逆に、失われないと信じてよいのは「InnoDB のデータ」だけ**で、`sync_binlog=1` にしていても binlog と InnoDB の状態がクラッシュ後にずれうる。
 
 ## ソースコードのどこか
 
@@ -201,16 +213,6 @@ static inline void notify_about_advanced_write_lsn(log_t &log,
 ```
 
 既定は ON。同時実行が低いとき、スレッドを起こす往復のほうが `write` より高くつくので OFF が速いことがある。
-
-## なぜそうなっているか
-
-**書く人と `fsync` する人を分けたのは、両者の待ち時間の性質が違うからだ。** `write(2)` はページキャッシュへのコピーで、普通はマイクロ秒で返る。`fsync` はデバイス次第でミリ秒かかる。1 本で回すと、`fsync` の間に溜まった redo を誰も `write` できず、次の `fsync` の対象が小さくなって効率が落ちる。分けておけば、`fsync` している間に writer が次の分を書き進め、**次の `fsync` 1 回でより多くのコミットをまとめて確定できる**。これは binlog のグループコミット ([2PC のページ](./two-phase-commit-and-group-commit/)) と同じ発想で、redo 側では明示的なステージを持たずスレッドの分離だけで実現している。
-
-**通知を別スレッドに出したのは、扇形展開のコストが本体の critical path に乗るのを避けるためだ。** 1 回の `fsync` で数千スレッドが起きうる。`os_event_set` を数千回呼ぶ間 `log_flusher_mutex` を持っていると、その分だけ次の `fsync` が遅れる。
-
-**ログバッファへの書き込みを lock-free にしたのは、8.0 で最も効いた変更の 1 つだ。** 5.7 までは `log_sys->mutex` の下で「予約 → コピー → dirty page 登録」を全部やっていた。コア数が増えるとここが単一のボトルネックになる。8.0 では atomic な予約 1 回に縮め、順序の回復を `Link_buf` に押し出した。**代償が「flush list の順序が緩む」ことで**、チェックポイント側が近似値を扱うようになった ([mini-transaction のページ](./mini-transaction/))。
-
-**`=2` を「1 秒分のデータを失う」と要約するのは雑すぎる。** 失うのは「`fsync` されていない `write(2)` 済みのデータ」で、これが消える条件は OS がページキャッシュを吐き出す前に落ちることだ。mysqld の `SIGSEGV` や OOM Killer では失われない。**逆に、失われないと信じてよいのは「InnoDB のデータ」だけ**で、`sync_binlog=1` にしていても binlog と InnoDB の状態がクラッシュ後にずれうる。
 
 ## どう活かすか
 

@@ -6,6 +6,8 @@ sidebar:
   order: 96
 ---
 
+> **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [performance_schema](./performance-schema-internals/)
+
 ## 何を学んだか
 
 まず、古い手順が動かない理由から。**`INFORMATION_SCHEMA.INNODB_LOCKS` と `INNODB_LOCK_WAITS` は 8.0 で削除された**。8.4.11 の `storage/innobase/handler/i_s.cc` にこの 2 つのテーブルの定義はない。ロックを見る口は `performance_schema.data_locks` / `data_lock_waits` に移り、`sys.innodb_lock_waits` もこちらを引くように書き直されている。
@@ -26,6 +28,24 @@ flowchart TD
     ROW --> OUT["1 チャンクぶんの行"]
     OUT -->|"まだ足りなければ<br/>shrink して次のシャードへ"| SCAN
 ```
+
+## なぜそうなっているか
+
+### なぜ「一貫性のないスキャン」を選んだか
+
+`lock_sys` は table と page それぞれ 512 シャードに分かれ、シャードごとに latch を持つ ([lock_sys](./lock-sys-sharding/))。一貫したスナップショットを取るにはグローバルな排他 latch が要り、その間**すべての行ロックの取得・解放が止まる**。監視のためにワークロードを止めるのは本末転倒だ。
+
+`SHOW ENGINE INNODB STATUS` は実際にそれをやっている ([SHOW ENGINE INNODB STATUS](./innodb-status-sections/) — `locksys::Global_exclusive_latch_guard`)。`data_locks` はそれを避けるために一貫性を捨てた。用途が違う。
+
+### なぜ `LOCK_DATA` が `NULL` になりうるか
+
+`buf_page_try_get` は「バッファプールにあれば latch を取って返す、なければ諦める」関数だ。ディスクから読み直すことはしない。監視のための読みがディスク I/O を起こしたら、それこそ本番を壊す。
+
+だから `LOCK_DATA` が `NULL` の行は「ロックはあるがページが常駐していない」という意味で、ロックの存在自体は疑う必要がない。
+
+### なぜ `I_S.INNODB_LOCKS` が消えたか
+
+古い `I_S.INNODB_LOCKS` は `trx_i_s_cache` というグローバルなキャッシュに、全ロックを**一度に**コピーしていた。上で却下されている「全件を一度に」の実装そのもので、大きなトランザクションでメモリが膨らみ、コピー中は InnoDB が止まった。`trx0i_s.cc` の一部 (`fill_locks_row`、`trx_i_s_create_lock_id`、`p_s_fill_lock_data`) だけが `data_locks` 用に生き残っている。ロック ID の書式が古いままなのは、`I_S.innodb_trx` の `trx_requested_lock_id` と join できるようにするためだと `print_table_lock_id` のコメントに書いてある。
 
 ## ソースコードのどこか
 
@@ -219,24 +239,6 @@ static const std::map<uint, const char *> lock_constant_names{
 `s.NON_UNIQUE = 1` があるので、**UNIQUE インデックスは絶対に出てこない**。制約として必要かもしれないからだ。ビューのコメント自身も「サーバが代表的な期間ずっと上がっていたことを確認してから信じろ」と書いている。再起動でカウンタが 0 に戻るので、起動直後に見ると全インデックスが未使用に見える。
 
 **[`statement_analysis.sql`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/scripts/sys_schema/views/p_s/statement_analysis.sql)** は `events_statements_summary_by_digest` を `SUM_TIMER_WAIT DESC` で並べ直しただけだ。`ALGORITHM = MERGE` なので一時表は作らない。加工は `format_pico_time` / `format_bytes` / `format_statement` による整形と、`SUM_NO_GOOD_INDEX_USED > 0 OR SUM_NO_INDEX_USED > 0` を `full_scan` の `*` にまとめている部分だけ。
-
-## なぜそうなっているか
-
-### なぜ「一貫性のないスキャン」を選んだか
-
-`lock_sys` は table と page それぞれ 512 シャードに分かれ、シャードごとに latch を持つ ([lock_sys](./lock-sys-sharding/))。一貫したスナップショットを取るにはグローバルな排他 latch が要り、その間**すべての行ロックの取得・解放が止まる**。監視のためにワークロードを止めるのは本末転倒だ。
-
-`SHOW ENGINE INNODB STATUS` は実際にそれをやっている ([SHOW ENGINE INNODB STATUS](./innodb-status-sections/) — `locksys::Global_exclusive_latch_guard`)。`data_locks` はそれを避けるために一貫性を捨てた。用途が違う。
-
-### なぜ `LOCK_DATA` が `NULL` になりうるか
-
-`buf_page_try_get` は「バッファプールにあれば latch を取って返す、なければ諦める」関数だ。ディスクから読み直すことはしない。監視のための読みがディスク I/O を起こしたら、それこそ本番を壊す。
-
-だから `LOCK_DATA` が `NULL` の行は「ロックはあるがページが常駐していない」という意味で、ロックの存在自体は疑う必要がない。
-
-### なぜ `I_S.INNODB_LOCKS` が消えたか
-
-古い `I_S.INNODB_LOCKS` は `trx_i_s_cache` というグローバルなキャッシュに、全ロックを**一度に**コピーしていた。上で却下されている「全件を一度に」の実装そのもので、大きなトランザクションでメモリが膨らみ、コピー中は InnoDB が止まった。`trx0i_s.cc` の一部 (`fill_locks_row`、`trx_i_s_create_lock_id`、`p_s_fill_lock_data`) だけが `data_locks` 用に生き残っている。ロック ID の書式が古いままなのは、`I_S.innodb_trx` の `trx_requested_lock_id` と join できるようにするためだと `print_table_lock_id` のコメントに書いてある。
 
 ## どう活かすか
 

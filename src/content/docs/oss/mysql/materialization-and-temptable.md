@@ -6,6 +6,8 @@ sidebar:
   order: 37
 ---
 
+> **前提**: [iterator executor](./executor-walkthrough/) / [ページとバッファ](./page-and-buffer/)
+
 ## 何を学んだか
 
 `AccessPath::Type` の `MATERIALIZE` と `TEMPTABLE_AGGREGATE` は、どちらも「内部一時表に書いてから読み直す」形の実行だ。EXPLAIN の `Using temporary` ([`opt_explain_traditional.cc#L49`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain_traditional.cc#L49)) がこれを指す。
@@ -30,6 +32,27 @@ flowchart TD
     DISK1 --> DISK2
     ONDISK -->|"移せない"| ERR["ER_RECORD_FILE_FULL<br/>The table is full"]
 ```
+
+## なぜそうなっているか
+
+**上限が 3 つに分かれているのは、守りたいものが違うからだ。** `tmp_table_size` は「1 つのクエリが暴走してもこれ以上は使わない」というセッション側の防波堤で、`temptable_max_ram` は「サーバ全体で TempTable が食う RAM の総量」というサーバ側の防波堤だ。TempTable エンジンは MEMORY エンジンと違ってブロックをスレッド間で共有する仕組み (`shared_block`) を持つので、グローバルな会計が必要になった。
+
+**`temptable_max_mmap` の既定が 0 なのは、mmap 経路の存在意義が薄れたからだ。** 元々は「RAM は超えたがディスク一時表にはしたくない」中間段階として導入されたが、`temptable_use_mmap` が deprecated になり、既定も 0 になった。**8.0 の記事で `temptable_max_mmap` を調整する話が出てきたら、8.4 ではその段が存在しないと考えてよい** ([前提: ページとバッファ](./page-and-buffer/) の話とは別に、ここは純粋にサーバプロセスのヒープの話だ)。
+
+**フォールバック先が MyISAM ではなく InnoDB なのは 8.0 からの変更で、8.4 でもそのままだ。** `create_tmp_table_with_fallback` も `create_ondisk_from_heap` も `innodb_hton` を直接名指ししている。つまりディスク一時表は `.ibd` (正確にはセッション一時テーブルスペース) に作られ、InnoDB のバッファプールを通る。ディスク一時表が増えるとバッファプールが汚れる、という副作用がここから来る。
+
+**`create_tmp_table_with_fallback` で 1024 バイト超の `CHAR` を弾いているのは InnoDB 側の制約だ。**
+
+```cpp title="sql/sql_tmp_table.cc"
+  /*
+    INNODB's fixed length column size is restricted to 1024. Exceeding this can
+    result in incorrect behavior.
+  */
+```
+
+長い `VARCHAR` を含む `GROUP BY` が `ER_TOO_LONG_KEY` で落ちることがあるのは、この分岐に当たっている。
+
+**`tmp_table_size` を実行中に変えられない、とわざわざコメントに書いてあるのは、変えられそうに見えるからだ。** セッション変数なので `SET SESSION tmp_table_size = ...` は成功するが、実行中のクエリが既に作った一時表の上限は動かない。ヒント (`SET_VAR`) で指定するときも、クエリ開始時点の値が使われる。
 
 ## ソースコードのどこか
 
@@ -256,27 +279,6 @@ ER_RECORD_FILE_FULL
 ```
 
 [`share/messages_to_clients.txt#L2737`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/share/messages_to_clients.txt#L2737)。内部一時表の場合、テーブル名には `#sql_...` のような内部名が入る。
-
-## なぜそうなっているか
-
-**上限が 3 つに分かれているのは、守りたいものが違うからだ。** `tmp_table_size` は「1 つのクエリが暴走してもこれ以上は使わない」というセッション側の防波堤で、`temptable_max_ram` は「サーバ全体で TempTable が食う RAM の総量」というサーバ側の防波堤だ。TempTable エンジンは MEMORY エンジンと違ってブロックをスレッド間で共有する仕組み (`shared_block`) を持つので、グローバルな会計が必要になった。
-
-**`temptable_max_mmap` の既定が 0 なのは、mmap 経路の存在意義が薄れたからだ。** 元々は「RAM は超えたがディスク一時表にはしたくない」中間段階として導入されたが、`temptable_use_mmap` が deprecated になり、既定も 0 になった。**8.0 の記事で `temptable_max_mmap` を調整する話が出てきたら、8.4 ではその段が存在しないと考えてよい** ([前提: ページとバッファ](./page-and-buffer/) の話とは別に、ここは純粋にサーバプロセスのヒープの話だ)。
-
-**フォールバック先が MyISAM ではなく InnoDB なのは 8.0 からの変更で、8.4 でもそのままだ。** `create_tmp_table_with_fallback` も `create_ondisk_from_heap` も `innodb_hton` を直接名指ししている。つまりディスク一時表は `.ibd` (正確にはセッション一時テーブルスペース) に作られ、InnoDB のバッファプールを通る。ディスク一時表が増えるとバッファプールが汚れる、という副作用がここから来る。
-
-**`create_tmp_table_with_fallback` で 1024 バイト超の `CHAR` を弾いているのは InnoDB 側の制約だ。**
-
-```cpp title="sql/sql_tmp_table.cc"
-  /*
-    INNODB's fixed length column size is restricted to 1024. Exceeding this can
-    result in incorrect behavior.
-  */
-```
-
-長い `VARCHAR` を含む `GROUP BY` が `ER_TOO_LONG_KEY` で落ちることがあるのは、この分岐に当たっている。
-
-**`tmp_table_size` を実行中に変えられない、とわざわざコメントに書いてあるのは、変えられそうに見えるからだ。** セッション変数なので `SET SESSION tmp_table_size = ...` は成功するが、実行中のクエリが既に作った一時表の上限は動かない。ヒント (`SET_VAR`) で指定するときも、クエリ開始時点の値が使われる。
 
 ## どう活かすか
 

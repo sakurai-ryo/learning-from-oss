@@ -6,6 +6,8 @@ sidebar:
   order: 57
 ---
 
+> **前提**: [MVCC](./mvcc-basics/) / [トランザクションの調停](./transaction-coordination/)
+
 ## この層の責務
 
 この層の仕事は 3 つある。

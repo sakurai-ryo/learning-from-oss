@@ -6,6 +6,8 @@ sidebar:
   order: 80
 ---
 
+> **前提**: [ALTER TABLE](./ddl-walkthrough/)
+
 ## 何を学んだか
 
 「どの `ALTER TABLE` が INSTANT になるか」は、覚えるものではなく**5 つの定数から読み取るもの**だ。`storage/innobase/handler/handler0alter.cc` の冒頭に、`HA_ALTER_FLAGS` のビットを目的別にまとめた集合が並んでいる。
@@ -37,6 +39,16 @@ flowchart TD
 **2 つめ。INSTANT が許されるのは 7 ビットだけで、そこには「型の変更」も「インデックスの追加」も入っていない。** `ALTER_STORED_COLUMN_TYPE` が立った時点で INSTANT は消える。
 
 **3 つめ。8.4.11 に `alter_algorithm` というシステム変数は存在しない。** ツリー全体を検索しても `sql/sql_yacc.yy` の文法規則名としてしか出てこない。8.0.11 で追加され 8.0.16 で削除された変数で、8.0.28 にも既にない。残っているのは `old_alter_table` のほうだ。
+
+## なぜそうなっているか
+
+**判定をエンジンに置いたのは、同じ SQL でもエンジンによって可否が変わるからだ。** `handler::check_if_supported_inplace_alter` は既定実装で `HA_ALTER_INPLACE_NOT_SUPPORTED` を返す (つまり COPY)。InnoDB だけが 11321 行かけて細かく答える。SQL 層は `enum_alter_inplace_result` の 8 値だけを知っていればよく、InnoDB の行バージョンも row log も知らない。
+
+**フラグ集合を 5 つに分けたのは、「何ができないか」より「何ができるか」を書くほうが安全だからだ。** `alter_inplace_flags & ~INNOBASE_INSTANT_ALLOWED` という書き方は、**新しい `HA_ALTER_FLAGS` が将来足されたとき自動的に「INSTANT 不可」に倒れる**。ホワイトリスト方式なので、追加を忘れて壊れる方向にはいかない。同じ形が `INNOBASE_INPLACE_IGNORE` と `INNOBASE_ALTER_NOREBUILD` でも使われている。
+
+**「空のテーブルには INSTANT を使わない」という判断は、行バージョンが有限資源だからだ。** バージョンは 64 までしか使えず、一度使うと `ALTER TABLE ... FORCE` で表を書き直すまで戻らない。行が 0 件なら INPLACE で書き直しても一瞬なので、資源を消費するほうを避ける。**「速いほうを選ぶ」ではなく「後で困らないほうを選ぶ」という判断が入っている**のが面白い。
+
+**`alter_algorithm` 変数が削除されたのは、変数で既定を変える設計が破綻したからだと読める。** `ALGORITHM=` は「これができなければエラーにしろ」という意味を持つ。それをグローバル変数で既定値にすると、あらゆる ALTER が予期せずエラーになる。残された `old_alter_table` は「COPY を強制する」という一方向の逃げ道で、エラーにはならない。
 
 ## ソースコードのどこか
 
@@ -219,16 +231,6 @@ INPLACE 確定後、`LOCK=NONE` にできるかどうかは `online` という�
 ```
 
 **`online == false` でも COPY にはならない。** INPLACE のまま、構築中の MDL が SU ではなく SNW になる (書き込みだけ止まる)。「online DDL ではない = テーブルコピー」という理解は間違いだ。
-
-## なぜそうなっているか
-
-**判定をエンジンに置いたのは、同じ SQL でもエンジンによって可否が変わるからだ。** `handler::check_if_supported_inplace_alter` は既定実装で `HA_ALTER_INPLACE_NOT_SUPPORTED` を返す (つまり COPY)。InnoDB だけが 11321 行かけて細かく答える。SQL 層は `enum_alter_inplace_result` の 8 値だけを知っていればよく、InnoDB の行バージョンも row log も知らない。
-
-**フラグ集合を 5 つに分けたのは、「何ができないか」より「何ができるか」を書くほうが安全だからだ。** `alter_inplace_flags & ~INNOBASE_INSTANT_ALLOWED` という書き方は、**新しい `HA_ALTER_FLAGS` が将来足されたとき自動的に「INSTANT 不可」に倒れる**。ホワイトリスト方式なので、追加を忘れて壊れる方向にはいかない。同じ形が `INNOBASE_INPLACE_IGNORE` と `INNOBASE_ALTER_NOREBUILD` でも使われている。
-
-**「空のテーブルには INSTANT を使わない」という判断は、行バージョンが有限資源だからだ。** バージョンは 64 までしか使えず、一度使うと `ALTER TABLE ... FORCE` で表を書き直すまで戻らない。行が 0 件なら INPLACE で書き直しても一瞬なので、資源を消費するほうを避ける。**「速いほうを選ぶ」ではなく「後で困らないほうを選ぶ」という判断が入っている**のが面白い。
-
-**`alter_algorithm` 変数が削除されたのは、変数で既定を変える設計が破綻したからだと読める。** `ALGORITHM=` は「これができなければエラーにしろ」という意味を持つ。それをグローバル変数で既定値にすると、あらゆる ALTER が予期せずエラーになる。残された `old_alter_table` は「COPY を強制する」という一方向の逃げ道で、エラーにはならない。
 
 ## どう活かすか
 

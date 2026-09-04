@@ -6,6 +6,8 @@ sidebar:
   order: 58
 ---
 
+> **前提**: [トランザクション](./transaction-walkthrough/) / [レコードの構造](./record-format/)
+
 ## 何を学んだか
 
 undo ログは 2 つの役割を兼ねている。
@@ -21,6 +23,18 @@ undo ログは 2 つの役割を兼ねている。
 - UPDATE の undo レコードには**変更された列の before image**が入る。ここから古い版を組み立てられる
 
 その帰結として、**コミット時に insert undo は即座に捨てられ、update undo だけが history list に積まれる**。「INSERT ばかりのワークロードでは `History list length` が伸びない」のはこのためだ。
+
+## なぜそうなっているか
+
+**undo をロールバックと MVCC で兼務させたのは、両者が必要とする情報が同じだからだ。** ロールバックには「変更前の値」が要り、MVCC にも「変更前の値」が要る。別々に持てば書き込み量が倍になる。実際、`trx_undo_page_report_modify` が書いた 1 本のレコードを、ロールバックは `row0umod.cc` が読み、MVCC は `row0vers.cc` が読む。
+
+**INSERT の undo を PK だけにできるのは、undo の役割が「前の状態に戻すこと」だからだ。** 挿入前の状態は「行が存在しない」で、それを表すのに列の値は要らない。ロールバックには「どの行を消すか」が分かればよく、それが PK だ。MVCC 側も、挿入前の版を見たいトランザクションには「行が見えない」を返せばよい。**だから insert undo はコミット時に捨てられる**——誰も参照しないと確定するからだ。
+
+**変更列だけを書くのは書き込み量を抑えるためだが、代償として版の復元がコストになる。** 最新版に更新ベクタを逆適用しないと古い版が得られないので、版鎖が n 段なら n 回の適用が要る。これが「長いトランザクションが同居していると読みが遅い」の直接の原因だ。
+
+**`DB_ROLL_PTR` の最上位ビットに `is_insert` を置いたのは、版鎖の終端判定を 1 ビットで済ませるためだ。** 終端を `NULL` ポインタで表すこともできたはずだが、undo は purge で消えるので「ポインタは残っているが指す先がない」状態が普通に起きる。`is_insert` なら**指す先を読まずに**終端と判断できる。
+
+**update undo を history list という連結リストにして rseg ヘッダに繋いだのは、purge が `trx->no` 順に処理する必要があるからだ。** `flst_add_first` で先頭に積むので、リストは新しい順に並ぶ。purge は末尾 (古いほう) から消していく。
 
 ## ソースコードのどこか
 
@@ -187,18 +201,6 @@ update undo は 1 段前の `trx_write_serialisation_history` の中で [`trx_un
 [`trx_rollback_to_savepoint_low` (`trx0roll.cc#L79`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/trx/trx0roll.cc#L79) がロールバック用のクエリグラフを組んで走らせる。実際に undo レコードを取り出すのが [`trx_roll_pop_top_rec_of_trx` (L1019)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/trx/trx0roll.cc#L1019) で、`undo_no` の大きいほうから順に取る。ある程度進むと [`trx_roll_try_truncate` (L860)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/trx/trx0roll.cc#L860) が undo ログの末尾を切り詰めて、ページを返す。
 
 **ロールバックは 1 レコードずつ逆適用する。** コミットが「確定したと宣言してロックを外す」だけなのと非対称で、この差が[コミットとロールバックのページ](./commit-and-rollback-internals/)の主題になる。
-
-## なぜそうなっているか
-
-**undo をロールバックと MVCC で兼務させたのは、両者が必要とする情報が同じだからだ。** ロールバックには「変更前の値」が要り、MVCC にも「変更前の値」が要る。別々に持てば書き込み量が倍になる。実際、`trx_undo_page_report_modify` が書いた 1 本のレコードを、ロールバックは `row0umod.cc` が読み、MVCC は `row0vers.cc` が読む。
-
-**INSERT の undo を PK だけにできるのは、undo の役割が「前の状態に戻すこと」だからだ。** 挿入前の状態は「行が存在しない」で、それを表すのに列の値は要らない。ロールバックには「どの行を消すか」が分かればよく、それが PK だ。MVCC 側も、挿入前の版を見たいトランザクションには「行が見えない」を返せばよい。**だから insert undo はコミット時に捨てられる**——誰も参照しないと確定するからだ。
-
-**変更列だけを書くのは書き込み量を抑えるためだが、代償として版の復元がコストになる。** 最新版に更新ベクタを逆適用しないと古い版が得られないので、版鎖が n 段なら n 回の適用が要る。これが「長いトランザクションが同居していると読みが遅い」の直接の原因だ。
-
-**`DB_ROLL_PTR` の最上位ビットに `is_insert` を置いたのは、版鎖の終端判定を 1 ビットで済ませるためだ。** 終端を `NULL` ポインタで表すこともできたはずだが、undo は purge で消えるので「ポインタは残っているが指す先がない」状態が普通に起きる。`is_insert` なら**指す先を読まずに**終端と判断できる。
-
-**update undo を history list という連結リストにして rseg ヘッダに繋いだのは、purge が `trx->no` 順に処理する必要があるからだ。** `flst_add_first` で先頭に積むので、リストは新しい順に並ぶ。purge は末尾 (古いほう) から消していく。
 
 ## どう活かすか
 

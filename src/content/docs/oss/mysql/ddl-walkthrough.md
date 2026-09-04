@@ -6,6 +6,8 @@ sidebar:
   order: 78
 ---
 
+> **前提**: [handler](./handler-walkthrough/) / [データディクショナリ](./data-dictionary/)
+
 ## この層の責務
 
 `ALTER TABLE` は 1 つの文だが、内部では性格の違う 3 つの仕事をまとめてやっている。

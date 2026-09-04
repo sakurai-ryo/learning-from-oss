@@ -6,6 +6,8 @@ sidebar:
   order: 97
 ---
 
+> **前提**: [InnoDB のスレッド一覧](./innodb-threads-walkthrough/) / [lock_sys](./lock-sys-sharding/)
+
 ## 何を学んだか
 
 `SHOW ENGINE INNODB STATUS` は、他の `SHOW` と違って**結果セットを組み立てない**。InnoDB は `FILE *` に向かって `fprintf` を並べるだけで、サーバはそれを読み戻して 1 個の巨大な文字列として 1 行 1 列で返す。書き先は起動時に開いておいた `srv_monitor_file` だ。
@@ -29,6 +31,26 @@ flowchart TD
 ```
 
 同じ `srv_printf_innodb_monitor` を背景スレッドも呼ぶ。`innodb_status_output=ON` にすると、[`srv_monitor_thread` (L1775)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/srv/srv0srv.cc#L1775) が 15 秒ごとに同じ内容をエラーログ (`stderr`) に吐く。
+
+## なぜそうなっているか
+
+### なぜ `FILE *` なのか
+
+印字関数群 (`sync_print` / `os_aio_print` / `ibuf_print` / `log_print` / `buf_print_io`) は全部 `FILE *` を引数に取る。これは `SHOW ENGINE INNODB STATUS` が SQL から呼べるようになるより前から、エラーログ (`stderr`) に吐くための関数だったからだ。
+
+`srv_monitor_thread` が `srv_printf_innodb_monitor(stderr, ...)` を呼ぶ行が今も残っていることがその証拠になる。SQL から返すには文字列が要るので、`stderr` の代わりに一時ファイルに書き、`fread` で読み戻すという回り道をしている。InnoDB 側は「`FILE *` に書く」という契約のまま変えずに済んだ。
+
+### なぜ 1MiB で切るのか
+
+`TRANSACTIONS` セクションは**アクティブなトランザクション 1 本につき数行**を出す。数千の接続がそれぞれトランザクションを持っていれば、それだけで数 MB になる。1 個の `Item_string` としてクライアントに送るので、上限がなければ `max_allowed_packet` を越えて接続が切れる ([パケット](./packet-framing/))。
+
+削るのがリストの**先頭**なのは、古いトランザクションほど新しいものより情報量が少ないから… ではない。単に `trx_start_pos` / `trx_list_end` の 2 つのオフセットで「前・トランザクション一覧・後」に 3 分割し、真ん中の先頭を捨てるのがいちばん簡単だからだ。結果として**いちばん古い、つまりいちばん問題になりやすいトランザクションが最初に消える**。
+
+### なぜ 8.4 で SEMAPHORES の数値が消えたか
+
+InnoDB の内部同期プリミティブは 8.0 の途中から徐々に自前実装から標準的なものへ移り、spin 回数のような自前カウンタを維持する場所がなくなった。同じ情報は performance_schema の待ちイベントから取れる。出力の書式を変えると既存のパーサが壊れるので、行だけ残して値を 0 にした。
+
+`SHOW ENGINE INNODB STATUS` の出力全体がこの性格を持っている。人間が読むためのテキストであると同時に、**20 年ぶんの監視スクリプトが正規表現で引っかけている契約**でもある。
 
 ## ソースコードのどこか
 
@@ -196,26 +218,6 @@ static void sync_print_wait_info(FILE *file) {
 ```
 
 `+ 0.001` はゼロ除算避けで、コメントに「2 人が同時に打ったときのため」と書いてある。**印字するたびに窓がリセットされる**ので、`SHOW ENGINE INNODB STATUS` を続けて 2 回打つと 2 回目の `N` はほぼ 0 になり、`reads/s` のような数値が跳ねる。背景の `srv_monitor_thread` も、窓が 60 秒を超えないように[`srv_refresh_innodb_monitor_stats` (L1296)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/srv/srv0srv.cc#L1296) を呼んで定期的にリセットしている。
-
-## なぜそうなっているか
-
-### なぜ `FILE *` なのか
-
-印字関数群 (`sync_print` / `os_aio_print` / `ibuf_print` / `log_print` / `buf_print_io`) は全部 `FILE *` を引数に取る。これは `SHOW ENGINE INNODB STATUS` が SQL から呼べるようになるより前から、エラーログ (`stderr`) に吐くための関数だったからだ。
-
-`srv_monitor_thread` が `srv_printf_innodb_monitor(stderr, ...)` を呼ぶ行が今も残っていることがその証拠になる。SQL から返すには文字列が要るので、`stderr` の代わりに一時ファイルに書き、`fread` で読み戻すという回り道をしている。InnoDB 側は「`FILE *` に書く」という契約のまま変えずに済んだ。
-
-### なぜ 1MiB で切るのか
-
-`TRANSACTIONS` セクションは**アクティブなトランザクション 1 本につき数行**を出す。数千の接続がそれぞれトランザクションを持っていれば、それだけで数 MB になる。1 個の `Item_string` としてクライアントに送るので、上限がなければ `max_allowed_packet` を越えて接続が切れる ([パケット](./packet-framing/))。
-
-削るのがリストの**先頭**なのは、古いトランザクションほど新しいものより情報量が少ないから… ではない。単に `trx_start_pos` / `trx_list_end` の 2 つのオフセットで「前・トランザクション一覧・後」に 3 分割し、真ん中の先頭を捨てるのがいちばん簡単だからだ。結果として**いちばん古い、つまりいちばん問題になりやすいトランザクションが最初に消える**。
-
-### なぜ 8.4 で SEMAPHORES の数値が消えたか
-
-InnoDB の内部同期プリミティブは 8.0 の途中から徐々に自前実装から標準的なものへ移り、spin 回数のような自前カウンタを維持する場所がなくなった。同じ情報は performance_schema の待ちイベントから取れる。出力の書式を変えると既存のパーサが壊れるので、行だけ残して値を 0 にした。
-
-`SHOW ENGINE INNODB STATUS` の出力全体がこの性格を持っている。人間が読むためのテキストであると同時に、**20 年ぶんの監視スクリプトが正規表現で引っかけている契約**でもある。
 
 ## どう活かすか
 

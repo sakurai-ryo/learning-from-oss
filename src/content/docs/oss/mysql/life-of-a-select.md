@@ -6,6 +6,8 @@ sidebar:
   order: 10
 ---
 
+> **前提**: [pluggable storage engine](./pluggable-storage-engine/) / [用語集](./glossary/)
+
 ## 何を学んだか
 
 1 本の SELECT は、大きく 6 つの段を通る。
@@ -56,7 +58,17 @@ sequenceDiagram
     E->>C: send_eof / OK パケット
 ```
 
+## なぜそうなっているか
+
+**最適化の出力をデータ構造にしたのは、実行器を差し替え可能にするためだ。** 8.0 の途中まで、MySQL の実行は `JOIN::exec` を頂点とする巨大な手続きで、「今どのテーブルを読んでいるか」は `JOIN_TAB` の配列上のインデックスで表現されていた。この形だと新しい実行方式 (hash join、ウィンドウ関数のバッファリング) を足すたびに `JOIN::exec` に分岐が増える。`AccessPath` → `RowIterator` に分けたことで、新しい実行方式は「新しい `AccessPath::Type` と対応する `RowIterator` を足す」だけになった。同時に、**プランを印字する場所が 1 つに定まった**のが `EXPLAIN FORMAT=TREE` だ。
+
+**`lock_tables` が prepare と optimize の間にあるのは、pruning とロック範囲のトレードオフの結果だ。** 先にロックすれば prepare 段階でもデータを見られるが、使わないパーティションまでロックしてしまう。後にロックすれば pruning が効くが、prepare はメタデータだけで完結しなければならない。MySQL は後者を選び、その制約をコメントに書き残した。
+
+**実行ループが `Read()` の 1 本しかないのは、pull 型 (Volcano モデル) を選んだからだ。** 各 iterator は「1 行くれ」と言われたら 1 行返す。`LIMIT 10` は根の近くの `LimitOffsetIterator` が 10 行読んだ時点で `-1` を返せばよく、下位の iterator は自分が打ち切られたことすら知らなくてよい ([行の返送のページ](./sending-rows-and-limit/))。逆に、この形は 1 行あたりの関数呼び出しが深くなるので、ベクトル化とは相性が悪い。
+
 ## ソースコードのどこか
+
+ここからは上の 6 段を実際の関数名で辿る。**個々の関数の中身を読む節ではなく、「誰が誰を呼ぶか」だけを頭に入れる節**だ。各関数の内部は層ごとの walkthrough に譲るので、ここでは経路の形と、8.0 時代の名前との対応だけを拾えばいい。
 
 ### 1. 受信 — `do_command`
 
@@ -187,14 +199,6 @@ bool Sql_cmd_dml::execute_inner(THD *thd) {
 木の根が返した行は [`Query_result_send::send_data` (`sql/query_result.cc#L97`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/query_result.cc#L97) → [`THD::send_result_set_row` (`sql/sql_class.cc#L2914`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_class.cc#L2914) を通り、`Item` ごとに `Protocol::store_*` が呼ばれ、最後に [`Protocol_classic::end_row` (`sql/protocol_classic.cc#L3260`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/protocol_classic.cc#L3260) が 1 行分のパケットをネットワークバッファに書く。
 
 全行が終わったら `send_eof`。ただし [L1315](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/protocol_classic.cc#L1315) を見ると、`CLIENT_DEPRECATE_EOF` を交渉したクライアントには**本物の EOF ではなく OK パケットが送られる** ([テキストプロトコルのページ](./text-protocol-and-resultset/))。
-
-## なぜそうなっているか
-
-**最適化の出力をデータ構造にしたのは、実行器を差し替え可能にするためだ。** 8.0 の途中まで、MySQL の実行は `JOIN::exec` を頂点とする巨大な手続きで、「今どのテーブルを読んでいるか」は `JOIN_TAB` の配列上のインデックスで表現されていた。この形だと新しい実行方式 (hash join、ウィンドウ関数のバッファリング) を足すたびに `JOIN::exec` に分岐が増える。`AccessPath` → `RowIterator` に分けたことで、新しい実行方式は「新しい `AccessPath::Type` と対応する `RowIterator` を足す」だけになった。同時に、**プランを印字する場所が 1 つに定まった**のが `EXPLAIN FORMAT=TREE` だ。
-
-**`lock_tables` が prepare と optimize の間にあるのは、pruning とロック範囲のトレードオフの結果だ。** 先にロックすれば prepare 段階でもデータを見られるが、使わないパーティションまでロックしてしまう。後にロックすれば pruning が効くが、prepare はメタデータだけで完結しなければならない。MySQL は後者を選び、その制約をコメントに書き残した。
-
-**実行ループが `Read()` の 1 本しかないのは、pull 型 (Volcano モデル) を選んだからだ。** 各 iterator は「1 行くれ」と言われたら 1 行返す。`LIMIT 10` は根の近くの `LimitOffsetIterator` が 10 行読んだ時点で `-1` を返せばよく、下位の iterator は自分が打ち切られたことすら知らなくてよい ([行の返送のページ](./sending-rows-and-limit/))。逆に、この形は 1 行あたりの関数呼び出しが深くなるので、ベクトル化とは相性が悪い。
 
 ## どう活かすか
 

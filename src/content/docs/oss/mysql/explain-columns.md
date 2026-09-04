@@ -6,6 +6,8 @@ sidebar:
   order: 93
 ---
 
+> **前提**: [アクセスパスの選択](./access-path-selection/) / [JOIN::optimize](./optimizer-walkthrough/)
+
 ## 何を学んだか
 
 `EXPLAIN` の出力は、オプティマイザが作った構造体を**そのまま横に並べただけ**だ。加工らしい加工はほとんどしていない。
@@ -38,6 +40,57 @@ flowchart TD
     ROW --> FLUSH["Explain_format_traditional::flush_entry<br/>12 列を Item にして send_data"]
     FLUSH --> OUT["クライアントに 1 行"]
 ```
+
+## なぜそうなっているか
+
+### 1 個のバッファを使い回す
+
+`qep_row` はテーブル 1 枚ぶんの値を貯めるだけの箱で、`Explain_format_traditional` はこれを**メンバとして 1 個だけ**持つ (`column_buffer`)。行を送るたびに `Buffer_cleanup` のデストラクタが `cleanup()` を呼んですべての `col_*` を空に戻す。
+
+EXPLAIN の出力は最大でも数十行だから、性能上の理由でこうする必要はない。理由は形式の抽象化のほうだ。同じ `qep_row` が階層フォーマット (`FORMAT=JSON` の version 1) では**中間ツリーのノード 1 個ぶんのプロパティ集合**として使われる。ヘッダのコメントがそう書いている。
+
+> For traditional EXPLAIN this structure contains cached data for a single output row.
+> For hierarchical EXPLAIN this structure contains property values for a single CTX_TABLE/CTX_QEP_TAB context node of the intermediate tree.
+
+値を集める `Explain_*` クラス群と、値を出力する `Explain_format_*` クラス群のあいだのデータ形式が `qep_row` だ。TRADITIONAL は貯めた瞬間に flush し、JSON は木に積む。この分離のために、TRADITIONAL では意味のないフィールド (`col_read_cost` / `col_prefix_cost` / `col_data_size_query` / `col_used_columns`) も同じ構造体に同居している。
+
+### `Using temporary` / `Using filesort` が特別扱いな理由
+
+一時表と filesort は、**テーブル 1 枚に紐づく操作ではない**。`ORDER BY` のためのソートはすべてのテーブルを読み終わったあとに 1 回起きるもので、どのテーブルの行に書くのが正しいかという問いに答えがない。
+
+階層フォーマットではこの問題が消える。`ORDER BY` のコンテキストというノードが木の中にあるので、そこに「filesort を使った」と書けばいい。`explain_tmptable_and_filesort` が `is_hierarchical()` で即 return するのはそのためだ。TRADITIONAL は木を平らにした表なので、置き場所がなく、仕方なく最初のテーブル行に貼り付けている。
+
+`Explain_format_flags` が「句 × 性質」の 2 次元ビットマスクなのも同じ事情で、`ORDER BY` と `GROUP BY` の両方が一時表を作ることがあるから、階層フォーマットではそれぞれのノードに別々に出せるように情報を残してある。TRADITIONAL に落とすときだけ `any()` で潰される。
+
+### `Explain_table` は `filtered` を計算しない
+
+単一テーブルの `UPDATE` / `DELETE` は `JOIN` を通らないので、`POSITION` が存在しない。[`Explain_table::explain_rows_and_filtered` (L1796)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L1796) は `Modification_plan::examined_rows` を `rows` に入れ、`filtered` には定数を入れる。
+
+```cpp title="sql/opt_explain.cc"
+  const ha_rows examined_rows =
+      query_thd->query_plan.get_modification_plan()->examined_rows;
+  fmt->entry()->col_rows.set(static_cast<long long>(examined_rows));
+
+  fmt->entry()->col_filtered.set(100.0);
+```
+
+`EXPLAIN UPDATE t SET ... WHERE ...` の `filtered` が常に `100.00` なのはバグではなく、そこに入れる値を持っていないからだ。
+
+### TRADITIONAL は hypergraph に対応しない
+
+`opt_explain.cc` の `Explain_*` クラス群は `QEP_TAB` と `POSITION` を直接読む。この 2 つは旧オプティマイザの出力で、[hypergraph オプティマイザ](./hypergraph-optimizer/)は作らない。だから両立させる方法がなく、[`explain_query` (L2306-2310)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L2306) は素直に諦める。
+
+```cpp title="sql/opt_explain.cc"
+  if (query_thd->lex->using_hypergraph_optimizer() &&
+      !fake_explain_for_secondary_engine) {
+    // With hypergraph, JSON is iterator-based. So it must be TRADITIONAL.
+    my_error(ER_HYPERGRAPH_NOT_SUPPORTED_YET, MYF(0),
+             "EXPLAIN with TRADITIONAL format");
+    return true;
+  }
+```
+
+ただしフォーマットを明示していなければ、パース時点で TREE に化ける。[`PT_explain::make_cmd` (`sql/parse_tree_nodes.cc#L3652`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/parse_tree_nodes.cc#L3652) が `m_explicit_format` を見て、hypergraph が有効なら `Explain_format_tree` を作る。`FORMAT=TRADITIONAL` と明示的に書いたときだけエラーになる — そのための `TRADITIONAL_STRICT` という内部の形式値まで用意されている。
 
 ## ソースコードのどこか
 
@@ -198,57 +251,6 @@ bool Explain_table_base::explain_tmptable_and_filesort(bool need_tmp_table_arg,
 ```
 
 `Explain_join::explain_extra` は 1 回出したあと [`need_tmp_table = need_order = false;` (L1620)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L1620) と自分でフラグを落とす。だから複数テーブルの JOIN でも `Using filesort` は 1 行にしか付かず、**どの行に付いたかにテーブル固有の意味はない**。
-
-## なぜそうなっているか
-
-### 1 個のバッファを使い回す
-
-`qep_row` はテーブル 1 枚ぶんの値を貯めるだけの箱で、`Explain_format_traditional` はこれを**メンバとして 1 個だけ**持つ (`column_buffer`)。行を送るたびに `Buffer_cleanup` のデストラクタが `cleanup()` を呼んですべての `col_*` を空に戻す。
-
-EXPLAIN の出力は最大でも数十行だから、性能上の理由でこうする必要はない。理由は形式の抽象化のほうだ。同じ `qep_row` が階層フォーマット (`FORMAT=JSON` の version 1) では**中間ツリーのノード 1 個ぶんのプロパティ集合**として使われる。ヘッダのコメントがそう書いている。
-
-> For traditional EXPLAIN this structure contains cached data for a single output row.
-> For hierarchical EXPLAIN this structure contains property values for a single CTX_TABLE/CTX_QEP_TAB context node of the intermediate tree.
-
-値を集める `Explain_*` クラス群と、値を出力する `Explain_format_*` クラス群のあいだのデータ形式が `qep_row` だ。TRADITIONAL は貯めた瞬間に flush し、JSON は木に積む。この分離のために、TRADITIONAL では意味のないフィールド (`col_read_cost` / `col_prefix_cost` / `col_data_size_query` / `col_used_columns`) も同じ構造体に同居している。
-
-### `Using temporary` / `Using filesort` が特別扱いな理由
-
-一時表と filesort は、**テーブル 1 枚に紐づく操作ではない**。`ORDER BY` のためのソートはすべてのテーブルを読み終わったあとに 1 回起きるもので、どのテーブルの行に書くのが正しいかという問いに答えがない。
-
-階層フォーマットではこの問題が消える。`ORDER BY` のコンテキストというノードが木の中にあるので、そこに「filesort を使った」と書けばいい。`explain_tmptable_and_filesort` が `is_hierarchical()` で即 return するのはそのためだ。TRADITIONAL は木を平らにした表なので、置き場所がなく、仕方なく最初のテーブル行に貼り付けている。
-
-`Explain_format_flags` が「句 × 性質」の 2 次元ビットマスクなのも同じ事情で、`ORDER BY` と `GROUP BY` の両方が一時表を作ることがあるから、階層フォーマットではそれぞれのノードに別々に出せるように情報を残してある。TRADITIONAL に落とすときだけ `any()` で潰される。
-
-### `Explain_table` は `filtered` を計算しない
-
-単一テーブルの `UPDATE` / `DELETE` は `JOIN` を通らないので、`POSITION` が存在しない。[`Explain_table::explain_rows_and_filtered` (L1796)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L1796) は `Modification_plan::examined_rows` を `rows` に入れ、`filtered` には定数を入れる。
-
-```cpp title="sql/opt_explain.cc"
-  const ha_rows examined_rows =
-      query_thd->query_plan.get_modification_plan()->examined_rows;
-  fmt->entry()->col_rows.set(static_cast<long long>(examined_rows));
-
-  fmt->entry()->col_filtered.set(100.0);
-```
-
-`EXPLAIN UPDATE t SET ... WHERE ...` の `filtered` が常に `100.00` なのはバグではなく、そこに入れる値を持っていないからだ。
-
-### TRADITIONAL は hypergraph に対応しない
-
-`opt_explain.cc` の `Explain_*` クラス群は `QEP_TAB` と `POSITION` を直接読む。この 2 つは旧オプティマイザの出力で、[hypergraph オプティマイザ](./hypergraph-optimizer/)は作らない。だから両立させる方法がなく、[`explain_query` (L2306-2310)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/opt_explain.cc#L2306) は素直に諦める。
-
-```cpp title="sql/opt_explain.cc"
-  if (query_thd->lex->using_hypergraph_optimizer() &&
-      !fake_explain_for_secondary_engine) {
-    // With hypergraph, JSON is iterator-based. So it must be TRADITIONAL.
-    my_error(ER_HYPERGRAPH_NOT_SUPPORTED_YET, MYF(0),
-             "EXPLAIN with TRADITIONAL format");
-    return true;
-  }
-```
-
-ただしフォーマットを明示していなければ、パース時点で TREE に化ける。[`PT_explain::make_cmd` (`sql/parse_tree_nodes.cc#L3652`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/parse_tree_nodes.cc#L3652) が `m_explicit_format` を見て、hypergraph が有効なら `Explain_format_tree` を作る。`FORMAT=TRADITIONAL` と明示的に書いたときだけエラーになる — そのための `TRADITIONAL_STRICT` という内部の形式値まで用意されている。
 
 ## どう活かすか
 

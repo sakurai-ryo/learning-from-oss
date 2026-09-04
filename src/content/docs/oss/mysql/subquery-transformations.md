@@ -6,6 +6,8 @@ sidebar:
   order: 30
 ---
 
+> **前提**: [JOIN::optimize](./optimizer-walkthrough/) / [join 順序](./join-order-search/)
+
 ## 何を学んだか
 
 `WHERE x IN (SELECT ...)` は、そのままの形では実行されない。MySQL は 4 通りの書き換えを持っていて、順に適用を試みる。
@@ -36,6 +38,16 @@ flowchart TD
     DSS --> EX["SUBQ_EXISTS<br/>IN を EXISTS に書き換えて相関実行"]
     DSS --> MAT["SUBQ_MATERIALIZATION<br/>一時表に materialize してルックアップ"]
 ```
+
+## なぜそうなっているか
+
+**semijoin 化を解決フェーズに置いたのは、テーブルの集合を変えてしまう変換だからだ。** 平坦化は `Query_block` の `leaf_tables` にテーブルを追加する。統計を取るのも join 順序を探索するのも、テーブルの集合が確定してからでないとできない。だから「コストを見て平坦化するか決める」ことはできず、**構文的な条件だけで決めて、その後の戦略選択にコストを回している**。
+
+**IN と EXISTS を同じ入口 (`Item_exists_subselect`) にまとめたのは、意味が同じだからだ。** `x IN (SELECT y FROM t)` と `EXISTS (SELECT 1 FROM t WHERE y = x)` は (NULL の扱いを除けば) 同値で、両方とも「内側に 1 行でもあるか」を問う。だから平坦化のコードは 1 本で済み、`convert_subquery_to_semijoin` の assert も 2 つの型しか許していない。
+
+**マテリアライズと IN→EXISTS の 2 択がコスト比較なのは、初期コストと反復コストのトレードオフだからだ。** マテリアライズは「サブクエリを 1 回実行 + 一時表への書き込み」という固定費を払って、以後のルックアップを安くする。外側が 1 行ならこの固定費は無駄で、外側が 100 万行なら圧倒的に得だ。分岐点は外側の行数に依存するので、静的には決められない。
+
+**LIMIT がある派生表に条件を押し込めないのは、意味が変わるからだ。** `(SELECT * FROM t ORDER BY x LIMIT 10)` の中に `WHERE y = 5` を押し込むと、「上位 10 件のうち y=5 のもの」が「y=5 のうち上位 10 件」に変わってしまう。同じ理由で `has_any_limit()` は 1 つでも LIMIT があれば true を返す。
 
 ## ソースコードのどこか
 
@@ -246,16 +258,6 @@ inline bool sj_is_materialize_strategy(uint strategy) {
 ```
 
 **`subquery_to_derived` は既定 off** で、セカンダリエンジン (HeatWave) の最適化パスでだけ自動的に有効になる ([ヒントと optimizer_switch](./optimizer-hints-and-switches/))。テーブルサブクエリ用の [`transform_table_subquery_to_join_with_derived` (L5395)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/sql/sql_resolver.cc#L5395) は `flatten_subqueries` から呼ばれる。
-
-## なぜそうなっているか
-
-**semijoin 化を解決フェーズに置いたのは、テーブルの集合を変えてしまう変換だからだ。** 平坦化は `Query_block` の `leaf_tables` にテーブルを追加する。統計を取るのも join 順序を探索するのも、テーブルの集合が確定してからでないとできない。だから「コストを見て平坦化するか決める」ことはできず、**構文的な条件だけで決めて、その後の戦略選択にコストを回している**。
-
-**IN と EXISTS を同じ入口 (`Item_exists_subselect`) にまとめたのは、意味が同じだからだ。** `x IN (SELECT y FROM t)` と `EXISTS (SELECT 1 FROM t WHERE y = x)` は (NULL の扱いを除けば) 同値で、両方とも「内側に 1 行でもあるか」を問う。だから平坦化のコードは 1 本で済み、`convert_subquery_to_semijoin` の assert も 2 つの型しか許していない。
-
-**マテリアライズと IN→EXISTS の 2 択がコスト比較なのは、初期コストと反復コストのトレードオフだからだ。** マテリアライズは「サブクエリを 1 回実行 + 一時表への書き込み」という固定費を払って、以後のルックアップを安くする。外側が 1 行ならこの固定費は無駄で、外側が 100 万行なら圧倒的に得だ。分岐点は外側の行数に依存するので、静的には決められない。
-
-**LIMIT がある派生表に条件を押し込めないのは、意味が変わるからだ。** `(SELECT * FROM t ORDER BY x LIMIT 10)` の中に `WHERE y = 5` を押し込むと、「上位 10 件のうち y=5 のもの」が「y=5 のうち上位 10 件」に変わってしまう。同じ理由で `has_any_limit()` は 1 つでも LIMIT があれば true を返す。
 
 ## どう活かすか
 
