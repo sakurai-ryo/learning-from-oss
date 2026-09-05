@@ -68,7 +68,7 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 
 ## まず読む 13 ページ
 
-126 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
+129 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
 
 1. [用語集](./glossary/) — 通読しなくていい。知らない語に当たったら戻ってくる
 1. [ソースの読み方](./reading-mysql-source/) — `ut_ad` が消えること、`true` がエラーであること。これは通読する
@@ -207,6 +207,9 @@ InnoDB — トランザクション・MVCC・ロック:
 - [AUTO_INCREMENT の永続化 — 再起動で採番が戻らなくなった経緯](./auto-increment/)
 - [デッドロック検出 — 背景スレッドが wait-for graph を見る](./deadlock-detection/)
 - [lock_sys — 512 シャードと latching](./lock-sys-sharding/)
+- [テーブルロックと意図ロック — IS / IX / S / X / AUTO-INC の実装](./table-and-intention-locks/)
+- [ロックの継承と移動 — ページが割れても隙間は守られる](./lock-inheritance-and-page-changes/)
+- [CATS — ロックキューは FIFO ではない](./lock-scheduling-cats/)
 - [コミットとロールバックの内部 — InnoDB 側で何が確定するか](./commit-and-rollback-internals/)
 - [XA とセーブポイント — 部分ロールバックと分散トランザクション](./xa-and-savepoint/)
 

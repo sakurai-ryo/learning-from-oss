@@ -3,7 +3,7 @@ title: "ログとステータス変数 — slow log と SHOW STATUS"
 description: "SHOW STATUS の値の大半は System_status_var という 1 個の構造体のフィールドで、status_vars[] はそこへのオフセットの表にすぎない。Handler_* を加算するのはサーバではなくストレージエンジンで、Created_tmp_disk_tables を上げる関数は同時に performance_schema の統計も上げる。slow log 側は log_slow_statement がどこから呼ばれるか、log_slow_extra が何の差分を書くかを読む。変数と仕組みの対応表を作る。"
 group: "観測手段"
 sidebar:
-  order: 120
+  order: 123
 ---
 
 > **前提**: [performance_schema](./performance-schema-internals/)

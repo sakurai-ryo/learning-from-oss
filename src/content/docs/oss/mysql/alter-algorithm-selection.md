@@ -3,7 +3,7 @@ title: "ALGORITHM と LOCK の決定 — INSTANT / INPLACE / COPY"
 description: "どの ALTER がどのアルゴリズムになるかは、ドキュメントの表を暗記するのではなく `handler0alter.cc` の 5 つの HA_ALTER_FLAGS グループから導ける。INNOBASE_INSTANT_ALLOWED に含まれる 7 ビット、INNOBASE_ONLINE_CREATE の 3 ビット、INNOBASE_ALTER_REBUILD の 8 ビット。この 3 集合と `check_if_supported_inplace_alter` の判定順を追えば、操作 → アルゴリズムの表は自分で書ける。8.4.11 に alter_algorithm 変数はもう存在しない。"
 group: "DDL"
 sidebar:
-  order: 102
+  order: 105
 ---
 
 > **前提**: [ALTER TABLE](./ddl-walkthrough/)

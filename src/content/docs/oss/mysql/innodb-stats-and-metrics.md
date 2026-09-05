@@ -3,7 +3,7 @@ title: "統計と INNODB_METRICS — persistent stats と I_S"
 description: "InnoDB の統計は mysql.innodb_table_stats / innodb_index_stats という 2 つの普通の InnoDB テーブルに保存され、SQL の INSERT でそこに書かれる。サンプリングは既定 20 ページで、行数ではなく B+tree の階層を選んで潜る。背景スレッドは 10 秒に 1 度 1 テーブルずつしか処理しない。観測側では INNODB_METRICS の 300 個超のカウンタと innodb_monitor_enable、そして handler/i_s.cc の 26 テーブル (INNODB_LOCKS はもう無い) を見る。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 99
+  order: 102
 ---
 
 > **前提**: [統計とコストモデル](./statistics-and-cost-model/) / [InnoDB のスレッド一覧](./innodb-threads-walkthrough/)

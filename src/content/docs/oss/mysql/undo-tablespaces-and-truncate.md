@@ -3,7 +3,7 @@ title: "undo テーブルスペースと truncate — 膨らんだ undo をど�
 description: "undo ログを書く先は 2 つ以上の undo テーブルスペースで、それぞれが 128 本のロールバックセグメントを持つ。膨らんだファイルを縮める唯一の手段が truncate で、それは purge スレッドが「非アクティブ化 → 空になるまで待つ → ファイルを作り直す」という 3 段の手続きとして実行する。最低 2 つ必要な理由も、truncate が進まないときの原因も、この手続きの形から出てくる。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 95
+  order: 98
 ---
 
 > **前提**: [undo ログ](./undo-log/) / [purge](./purge/) / [セグメントとエクステント](./fsp-segments-and-extents/)

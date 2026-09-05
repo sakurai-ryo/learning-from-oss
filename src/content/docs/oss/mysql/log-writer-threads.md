@@ -3,7 +3,7 @@ title: "log writer / flusher — lock-free なログバッファと 4 スレッ�
 description: "redo の書き込みは 8.0 で 4 本のスレッドに分割された。書く人、fsync する人、そして「終わった」を伝える人が 2 人。ユーザスレッドはログバッファへ lock-free にコピーして、あとは自分が必要な LSN まで待つだけになる。誰が誰を起こすか、どこで待ちが発生するか、そして innodb_flush_log_at_trx_commit=2 が正確には何を失うのかを、待ちの経路から読む。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 89
+  order: 92
 ---
 
 > **前提**: [redo ログ](./redo-log-walkthrough/) / [mini-transaction](./mini-transaction/)

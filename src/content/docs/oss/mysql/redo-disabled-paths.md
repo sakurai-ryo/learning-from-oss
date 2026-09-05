@@ -3,7 +3,7 @@ title: "redo を書かない経路 — 一括ロードと ALTER INSTANCE DISABLE
 description: "InnoDB には redo を書かずにページを変更する経路が 3 つある。一時テーブル、インデックスの一括構築、そしてサーバ全体の redo 停止。どれも「クラッシュしたら諦める」という同じ取引をしていて、代わりに払う代償 (ページを自分で flush する、doublewrite も止まる、クラッシュしたらインスタンスを作り直す) が経路ごとに違う。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 88
+  order: 91
 ---
 
 > **前提**: [mini-transaction](./mini-transaction/) / [redo ログ — mtr から #ib_redo ファイルまで](./redo-log-walkthrough/) / [クラッシュリカバリ](./crash-recovery/)

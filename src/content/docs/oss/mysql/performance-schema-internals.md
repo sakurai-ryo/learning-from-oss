@@ -3,7 +3,7 @@ title: "performance_schema — 計装点とメモリ上のテーブル"
 description: "P_S のオーバーヘッドは「計装点があるかどうか」ではなく「どこまでゲートを通過するか」で決まる。mysql_mutex_lock はポインタと bool を 1 つずつ見て、多くの場合そこで終わる。setup_instruments の ENABLED と TIMED、setup_consumers の 16 行、PFS_AUTOSCALE_VALUE (-1) による small/medium/large の 3 段自動サイジング、そして .h.pp が ABI のスナップショットにすぎないことを、8.4.11 のコードで確かめる。"
 group: "観測手段"
 sidebar:
-  order: 117
+  order: 120
 ---
 
 > **前提**: [プロセスとスレッド](./thread-model/)

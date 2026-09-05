@@ -3,7 +3,7 @@ title: "MDL — ALTER が「固まる」正体"
 description: "MDL は InnoDB の行ロックとは別の機構で、`sql/mdl.cc` にある 11 種類の型と 1 枚の互換行列で動く。ロックの寿命はトランザクション終了までなので、コミットしていない SELECT 1 本が ALTER の排他要求を止める。さらに互換行列の「待っている X がいると新しい SR も待つ」という性質のせいで、止まった ALTER の後ろに後続の全クエリが並ぶ。lock_wait_timeout の既定は 1 年。performance_schema.metadata_locks で犯人を特定する手順まで。"
 group: "DDL"
 sidebar:
-  order: 101
+  order: 104
 ---
 
 > **前提**: [ロックの種類 (前提)](./lock-kinds/) / [ALTER TABLE](./ddl-walkthrough/)

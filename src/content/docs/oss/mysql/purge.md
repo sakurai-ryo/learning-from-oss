@@ -3,7 +3,7 @@ title: "purge — 誰にも見えなくなった版を消す"
 description: "purge が消せるのは「今生きているどの read view からも見えない版」だけで、その境界は最も古い read view の low_limit_no 1 つで決まる。だから purge が追いつかないことと、長いトランザクションが 1 本残っていることは同じ現象である。キューが rseg を trx_no 順に並べた min-heap であること、rseg がキューに積まれるのは空だったときだけであること、そして innodb_max_purge_lag が DML 側に μ 秒単位の sleep を挿すという乱暴な仕組みまで読む。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 94
+  order: 97
 ---
 
 > **前提**: [undo ログ](./undo-log/) / [read view と可視性](./read-view-and-visibility/)

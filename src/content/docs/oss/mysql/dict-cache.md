@@ -3,7 +3,7 @@ title: "辞書キャッシュ — InnoDB がテーブル定義を握り続ける
 description: "8.0 でデータディクショナリは InnoDB のテーブルに一本化されたが、InnoDB 自身は今も dict_sys という独自のメモリキャッシュを持っている。捨てられるテーブルと捨てられないテーブルが 2 本のリストに分かれ、外部キーを持つテーブルと AHI に載ったインデックスは決して捨てられない。table_definition_cache がここに効く経路と、パーティションが高くつく理由を読む。"
 group: "InnoDB — 背景スレッド"
 sidebar:
-  order: 98
+  order: 101
 ---
 
 > **前提**: [データディクショナリ](./data-dictionary/) / [handler の walkthrough](./handler-walkthrough/) / [InnoDB のスレッド一覧](./innodb-threads-walkthrough/)

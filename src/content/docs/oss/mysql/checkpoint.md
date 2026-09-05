@@ -3,7 +3,7 @@ title: "チェックポイント — 「ここまでは書けている」LSN"
 description: "チェックポイント LSN の定義は 1 行の min で書ける。dirty page の最古の LSN と、dirty page が flush list に載り終えた LSN と、redo が fsync された LSN の最小値だ。この値が進まないと redo ファイルを再利用できず、page cleaner の同期 flush が始まり、最後はユーザスレッドが log_free_check で全員止まる。「Redo log is running out of free space, pausing user threads...」が出るまでの因果を、3 段の容量上限から追う。"
 group: "InnoDB — 耐久性"
 sidebar:
-  order: 90
+  order: 93
 ---
 
 > **前提**: [redo ログ](./redo-log-walkthrough/) / [flush list と page cleaner](./flush-list-and-page-cleaner/)

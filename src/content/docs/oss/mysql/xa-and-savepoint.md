@@ -3,7 +3,7 @@ title: "XA とセーブポイント — 部分ロールバックと分散トラ�
 description: "セーブポイントの正体は undo 番号 1 個で、ROLLBACK TO SAVEPOINT はその番号まで undo を巻き戻すだけ。取得したロックは 1 つも返らない。XA PREPARE は逆に、undo セグメントの状態を PREPARED にしてトランザクションをセッションから切り離す。放置された PREPARED が purge を止め、ロックを握り続ける理由をここで読む。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 85
+  order: 88
 ---
 
 > **前提**: [トランザクション — trx_t の一生](./transaction-walkthrough/) / [undo ログ](./undo-log/) / [コミットとロールバックの内部](./commit-and-rollback-internals/)

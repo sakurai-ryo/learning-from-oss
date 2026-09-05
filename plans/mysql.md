@@ -563,3 +563,33 @@ InnoDB 5 群に 12 ページ追加し、章は **126 ページ**になった。�
 - **`ROLLBACK TO SAVEPOINT` はロックを 1 つも解放しない。** `trx_rollback_finish` を呼ぶのは `savept == nullptr` の完全ロールバックだけ
 - **undo テーブルスペースの truncate は space_id を変える。** `trx_undo_truncate_tablespace` のコメントに明記。だから最小 2 個が要る
 - **辞書キャッシュの上限は `table_definition_cache` を流用している。** `innobase_get_table_cache_size()` が `table_def_size` を返すだけで、InnoDB 専用の設定はない
+
+### ロック群の増補 (2026-09-05)
+
+群 10 に 3 ページ追加し、章は **129 ページ**になった。order 84-86 を新設し、既存の 84 以降を +3 した (DDL 以降は 103-127)。
+
+| order | slug                                | 中身                                                                                                                                                                    |
+| ----- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 84    | `table-and-intention-locks`         | 互換表と強さ表、一貫性読みはテーブルロックも取らない、`count_by_mode` による IS/IX の近道、AUTO-INC ロックの実装、`LOCK TABLES` の 4 条件 AND、DDL / IMPORT の `LOCK_X` |
+| 85    | `lock-inheritance-and-page-changes` | `lock_update_*` / `lock_move_*` の一覧、move と inherit の違い、purge が呼ぶ `lock_update_delete`、`inherit_all` ヒューリスティック、infimum への一時退避               |
+| 86    | `lock-scheduling-cats`              | CATS の設計コメント、Grant / Wait Group、`schedule_weight` の計算 (`lock0wait.cc`)、`WEIGHT_BOOST`、bypass 禁止、`lock_schedule_refreshes`                              |
+
+#### 増補で分かったこと
+
+- **一貫性読み取りは InnoDB のテーブルロックを 1 つも取らない。** `row_search_mvcc` の `select_lock_type == LOCK_NONE` の枝は read view を割り当てて終わり。`lock_table(LOCK_IS/LOCK_IX)` はロック読みと DML だけが通る。「SELECT が ALTER を止める」の正体が MDL だという主張の、InnoDB 側の裏付けになる
+- **`LOCK TABLES ... WRITE` は autocommit=1 では InnoDB のテーブル `X` ロックを取らない。** `external_lock` の条件が `SQLCOM_LOCK_TABLES && THDVAR(table_locks) && OPTION_NOT_AUTOCOMMIT && thd_in_lock_tables` の AND。コメントに「4.1.9 以降、即解放されるうえデッドロックしやすいのでやめた」とある
+- **テーブルロックは `trx->lock.trx_locks` の先頭、レコードロックは末尾に入る** (`add_to_trx_locks`)。だから `lock_table_has` は `LOCK_TABLE` でなくなった時点でループを抜けられる
+- **`X` は強さ表で `AUTO_INC` より強い。** `LOCK TABLES ... WRITE` を持っていれば AUTO-INC ロックの取得は素通りになる
+- **`table->count_by_mode[]` は 2 つの目的を兼ねている。** `LOCK_S` / `LOCK_X` が 0 本なら IS/IX はキュー走査なしで即許可 (同じコメントが 3 箇所)。`count_by_mode[LOCK_AUTO_INC]` は AUTO-INC の許可 + 待機数
+- **AUTO-INC ロックの `lock_t` はテーブルに 1 個だけ事前確保されている** (`table->autoinc_lock`)。待つ側だけが heap から確保する。所有判定は `table->autoinc_trx` を latch なしで読むだけ
+- **辞書操作中のテーブルロック待ちはバグ扱い。** `lock_table_enqueue_waiting` が `ER_IB_MSG_642` + 「詳細なバグ報告を出してくれ」をエラーログに書く
+- **ロックの継承条件は 4 つの AND** (`lock_rec_inherit_to_gap`)。`skip_lock_inheritance` (XA PREPARE) / insert intention / DD テーブル / RC (ただし `inherit_all` が立っていれば継承)
+- **`inherit_all` は制約検査のロックを RC でも文の間だけ継承するためのヒューリスティック。** ロックに印を持たせず、`AT_LEAST_STATEMENT` で要求されたらトランザクションに 1 ビット立てる。粒度が粗く、同じ文の他のロックも巻き込むとコメント自身が認めている
+- **`lock_update_delete` を呼ぶのは主に purge。** `DELETE` 文は削除マークを立てるだけなので、ロックが次レコードのギャップに移るのは purge のタイミング。change buffer マージ (`ibuf0ibuf.cc`) も同じ経路を通る
+- **`lock_update_insert` は `LOCK_REC_NOT_GAP` を継承しない**し、RC の除外条件も持たない (`lock_rec_inherit_to_gap_if_gap_lock`)
+- **ページ再編成では許可済みロックを前に集め直す** (`lock_move_granted_locks_to_front`)。「Grant Group が先」という不変条件をデッドロック検出が使っているため
+- **ロックキューは FIFO ではない。** CATS (論文 "Contention-Aware Lock Scheduling for Transactional Databases" の変種) で、`schedule_weight` (推移的に止めている数) の降順に許可を試す。設計コメントは `lock0lock.h` L130 から 100 行
+- **`innodb_deadlock_detect=OFF` でも重み計算は止まらない。** `lock_wait_update_schedule_and_check_for_deadlocks` で `if (innobase_deadlock_detect)` が包んでいるのは閉路探索だけ。スナップショットとグラフ構築と重み公開はその外
+- **飢餓対策は「2n 件の予約に追い越されたら `WEIGHT_BOOST`」。** `WEIGHT_BOOST = min(n, 1e9/n)`。待機中ロックの bypass は starvation 回避のため意図的に禁止されている
+- **重みは観測できない。** `schedule_weight` は `data_locks` にも `SHOW ENGINE INNODB STATUS` にも出ず、アルゴリズムを切り替えるシステム変数も 8.4 には無い。見えるのは `INNODB_METRICS` の `lock_schedule_refreshes` だけ
+- **`lock0wait.cc` には実験の記録が長文コメントで残っている。** `infos` を `static` にする / `reserve` する / 自作ハッシュを使う——どれも速くならなかった、変える前に必ず実測しろ、と書いてある
