@@ -10,11 +10,11 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.9",
-    "astro": "^7.1.6",
+    "@astrojs/starlight": "^0.42.0",
+    "astro": "^7.3.1",
     "astro-mermaid": "^2.1.0",
     "mermaid": "^11.17.2",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "vite": "catalog:",
@@ -23,7 +23,7 @@
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "11.24.0",
+      "version": "12.3.4",
       "onFail": "download"
     }
   }
