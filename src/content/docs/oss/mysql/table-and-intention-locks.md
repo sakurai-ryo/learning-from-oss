@@ -3,7 +3,7 @@ title: "テーブルロックと意図ロック — IS / IX / S / X / AUTO-INC �
 description: "InnoDB のロックモードは 5 つしかなく、行に使うのは S と X だけ、残りの IS / IX / AUTO-INC はテーブルにしか付かない。意図ロックは「これから行ロックを取る」という宣言で、IX 同士は常に互換なので DML 同士がここで詰まることはない。詰まるのは S か X を取る誰か——LOCK TABLES、DDL、IMPORT TABLESPACE——がいるときだけだ。そして LOCK TABLES ... WRITE は autocommit=1 だと InnoDB のテーブルロックを取らない。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 84
+  order: 87
 ---
 
 > **前提**: [ロックの種類 (前提)](./lock-kinds/) / [ロックの種類 (InnoDB)](./lock-modes-and-types/)

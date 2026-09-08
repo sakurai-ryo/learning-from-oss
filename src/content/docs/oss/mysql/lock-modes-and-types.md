@@ -167,24 +167,7 @@ static const byte lock_compatibility_matrix[5][5] = {
 
 ### 暗黙ロック — レコードの `DB_TRX_ID` がロックである
 
-自分が INSERT / UPDATE した行には、自分の ID が `DB_TRX_ID` に入る。**この事実そのものが排他ロックとして働く**。`lock_t` は作られない。
-
-他のトランザクションがその行に触ろうとすると、明示ロックへの変換が起きる。
-
-```cpp title="storage/innobase/lock/lock0lock.cc"
-    if (!trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY) &&
-        !lock_rec_has_expl(LOCK_X | LOCK_REC_NOT_GAP, block, heap_no, trx)) {
-      ulint type_mode;
-
-      type_mode = (LOCK_REC | LOCK_X | LOCK_REC_NOT_GAP);
-
-      lock_rec_add_to_queue(type_mode, block, heap_no, index, trx, true);
-    }
-```
-
-[`lock_rec_convert_impl_to_expl_for_trx` (L5245)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5245) の核心部。**暗黙ロックは常に `LOCK_X | LOCK_REC_NOT_GAP` に変換される。** ギャップは含まない。
-
-呼び出し側は [`lock_rec_convert_impl_to_expl` (L5301)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5301) で、クラスタードインデックスなら `DB_TRX_ID` を読んで `trx_rw_is_active` にかけるだけ。セカンダリインデックスは葉に `DB_TRX_ID` がないので、[`row_vers_impl_x_locked` (`row0vers.cc#L528`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/row/row0vers.cc#L528) でクラスタード側の版鎖を辿る羽目になる ([セカンダリインデックスと MVCC](./secondary-index-visibility/))。
+自分が INSERT / UPDATE した行には、自分の ID が `DB_TRX_ID` に入る。**この事実そのものが排他ロックとして働く**。`lock_t` は作られず、他のトランザクションがその行に触ろうとした瞬間に初めて `lock_rec_convert_impl_to_expl` が明示ロックへ変換する。クラスタードとセカンダリで判定コストが 1 桁違う理由、変換がシャード latch の外で起きる理由、変換を呼ぶ経路と呼ばない経路の非対称性まで含めて、詳細は [暗黙ロック](./implicit-locks/) にまとめてある。
 
 ### ロックを取る入口
 
@@ -193,9 +176,9 @@ static const byte lock_compatibility_matrix[5][5] = {
 - [`lock_clust_rec_read_check_and_lock` (L5509)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5509)
 - [`lock_sec_rec_read_check_and_lock` (L5460)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5460)
 
-どちらも**まずシャード latch の外で `lock_rec_convert_impl_to_expl` を呼び、その後で `Shard_latch_guard` を取って `lock_rec_lock` に入る**。暗黙→明示の変換は自分でシャード latch を取り直す ([lock_sys のシャーディング](./lock-sys-sharding/))。
+どちらも**まずシャード latch の外で `lock_rec_convert_impl_to_expl` を呼び、その後で `Shard_latch_guard` を取って `lock_rec_lock` に入る**。この順序が latch order の一方通行 (B+tree のページラッチ → lock_sys シャード latch) から要求される唯一の配置であることは [行ロックとページラッチの継ぎ目](./locks-and-page-latches/) で扱った。
 
-`lock_rec_lock` ([L1878](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1878)) は速い道と遅い道に分かれる。[`lock_rec_lock_fast` (L1631)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1631) は「そのページにロックが 1 つもない、または自分の同じ `type_mode` のロックが 1 つだけある」場合を扱い、ビットを立てて終わる。それ以外は [`lock_rec_lock_slow` (L1763)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1763) に落ちて互換性を全部確かめる。
+`lock_rec_lock` ([L1878](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1878)) の先頭には 3 段の `ut_ad` があり、「テーブルの意図ロック → ページシャードの latch → 行ロック」という取得順序がコメントではなく実行時 assert として埋め込まれている (詳細は [行ロックとページラッチの継ぎ目](./locks-and-page-latches/) の「`lock_rec_lock` の事前条件」)。この関数自体は速い道と遅い道に分かれる。[`lock_rec_lock_fast` (L1631)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1631) は「そのページにロックが 1 つもない、または自分の同じ `type_mode` のロックが 1 つだけある」場合を扱い、ビットを立てて終わる。それ以外は [`lock_rec_lock_slow` (L1763)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1763) に落ちて互換性を全部確かめる。
 
 ### SKIP LOCKED / NOWAIT はここで分岐する
 

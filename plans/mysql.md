@@ -622,3 +622,31 @@ Alibaba Cloud の "MySQL Memory Allocation and Management" Part I/II (`_600991` 
 - AHI (`buf_pool_get_curr_size() / sizeof(void*) / 64`)・lock_sys (`srv_lock_table_size = 5 * (buf_pool_size / UNIV_PAGE_SIZE)`)・辞書キャッシュの `table_hash` (`buf_pool_get_curr_size() / (512 * UNIV_WORD_SIZE)`) は、初期サイズがどれも `buf_pool_get_curr_size()` から逆算される
 - change buffer の `innodb_change_buffer_max_size` (既定 25、最大 50) はブログどおりだったが、[change-buffer.md](../src/content/docs/oss/mysql/change-buffer.md) で既に「8.4 は `innodb_change_buffering` 既定 OFF なのでこの上限自体が意味を持たない」まで踏み込んで書いてあったため、そちらには追記しなかった
 - SQL 層の `MEM_ROOT` (`include/my_alloc.h` / `mysys/my_alloc.cc`) は既定 512 バイトから始まり 1.5 倍成長 (`AllocBlock`)、ブロックに入らない大きな確保は現在のブロックを差し替えずに 1 つ前へ挿す (`AllocSlow`)、`ClearForReuse` は最後の (最大の) ブロックだけを残す。Valgrind/ASAN ビルドでは `MEM_ROOT_SINGLE_CHUNKS` が立ちこの最適化が丸ごと無効になる。既存の [parse-tree-and-contextualize.md](../src/content/docs/oss/mysql/parse-tree-and-contextualize.md) が使う側 (`parser_max_mem_size` → `set_max_capacity`) を扱っていたので、`innodb-memory.md` 側は実装のメカニズムを担当する形で棲み分けた
+
+### ロック群の第 2 次増補 (2026-09-08)
+
+InnoDB のロック実装を「ラッチとの二重構造」軸で掘り下げる依頼を受け、群 10 に新規 5 ページを追加した。129 → **134 ページ**。order 78-93 の内訳を種類→格納構造→ラッチとの境界→取得経路→解放の順に並べ替え、80/81/82/85/91 を新設 (旧 79 以降は種類ごとに個別に振り直し、旧 89 (`redo-log-walkthrough`) 以降は一括で +5)。
+
+新規ページ (すべて群「InnoDB — トランザクション・MVCC・ロック」):
+
+| order | slug                           | 中身                                                                                                                                                                                                                                                            |
+| ----- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 80    | `locks-and-page-latches`       | latch order (`latch_level_t`) で B+tree のページラッチが lock_sys のシャード latch より上位にあること、`lock_rec_lock` の 3 段の `ut_ad` 事前条件、`Shard_latch_guard` のスコープが暗黙ロック変換を外に出す理由、`SYNC_LEVEL_VARYING`。この増補全体の主題ページ |
+| 81    | `lock-acquisition-walkthrough` | `row_search_mvcc` → `lock_rec_lock` → 競合時 `DB_LOCK_WAIT` → `lock_wait_suspend_thread` で寝る → 起こされてリトライ、を 1 本の経路として辿る walkthrough                                                                                                       |
+| 82    | `implicit-locks`               | 暗黙ロック単独ページ。`DB_TRX_ID` を読むだけの判定、セカンダリでの高コスト判定 (`row_vers_impl_x_locked`)、変換を呼ぶ経路/呼ばない経路の非対称性                                                                                                                |
+| 85    | `update-and-delete-locking`    | UPDATE/DELETE のロック取得点。**クラスタード側 (`lock_clust_rec_modify_check_and_lock`) は通常の SQL 経路では no-op**、実際に評価されるのはセカンダリの delete-mark + insert という発見が中心                                                                   |
+| 91    | `lock-release-and-commit`      | ロック解放時の latch 戦略。共有 latch で 5 回試し失敗したら global exclusive latch に切り替える 2 段構え、AUTO-INC 解放の heuristic                                                                                                                             |
+
+既存 9 ページにもラッチ視点の節を追加: `lock-modes-and-types` (`lock_rec_lock` 事前条件への言及、暗黙ロック節を `implicit-locks` へ縮約)、`lock-sys-sharding` (latch order 上の位置づけ、`Trx_locks_cache`)、`locking-in-rr-vs-rc` (早期解放の latch 詳細を `lock-release-and-commit` へ委譲)、`lock-inheritance-and-page-changes` (`lock_update_*` 呼び出し時点の mtr のラッチ保持状態)、`row-dml-implementation` (`BTR_NO_LOCKING_FLAG` の意味を明示、ラッチ言及ゼロを解消)、`deadlock-detection` (待ち手側の実装を `lock-acquisition-walkthrough` へ委譲)、`lock-kinds` (ロックとラッチの区別を前提群の時点で明示)。`index.md` の群 10 目次と「効いたこと」節、`symptom-index.md` に 3 行追加。
+
+#### 執筆で分かったこと
+
+- **latch order の実際の向き**: `sync0types.h` の `latch_level_t` で `SYNC_TREE_NODE`/`SYNC_INDEX_TREE` (B+tree) は `SYNC_LOCK_SYS_SHARDED`/`SYNC_LOCK_SYS_GLOBAL` より値が大きい (後に取る)。`LatchDebug::find_lower_or_equal` は「すでに持っているものが要求するものと同じか低ければ違反」という向きで検査するので、**B+tree のページラッチを持ったまま lock_sys シャードを取るのは合法、逆は違反**
+- **クラスタード側の UPDATE/DELETE ロック取得点は通常の SQL 経路ではほぼ no-op になる。** `row_upd_clust_step` は `node->has_clust_rec_x_lock` (MySQL インターフェース用の update ノードでは常に `true`) が立っていれば `lock_clust_rec_modify_check_and_lock` の呼び出し自体をスキップし、`row_upd_clust_rec` は `btr_cur_optimistic_update` 等に常に `flags | BTR_NO_LOCKING_FLAG` を渡す。`btr_cur_del_mark_set_clust_rec` (DELETE 経路) に至っては呼び出し元の `flags` を無視して `BTR_NO_LOCKING_FLAG` を直書きする。実際に X ロックが確定するのはその行を見つけた locking read の時点で、書き込み側で新たにロックが評価されるのはセカンダリインデックス側 (`lock_sec_rec_modify_check_and_lock`、`flags = 0` 固定) だけ
+- **`lock_wait_suspend_thread` は寝る前に必ず dict ラッチを手放す** (`RW_S_LATCH` なら `row_mysql_unfreeze_data_dictionary`、`RW_X_LATCH` なら `rw_lock_x_unlock`)。「ラッチを持ったまま行ロックの完了を待たない」という規約が switch 文として実装されている
+- **DB_LOCK_WAIT からのリトライは SQL 文の再実行ではなく InnoDB 内部の `goto`** (`row0sel.cc` の `rec_loop`、`row0mysql.cc` の `run_again`)。アプリ側の再実行が必要になるのはデッドロック/タイムアウトでこの内部リトライの輪から外れたときだけ
+- **ロックの早期解放は「共有 latch で 5 回試し、駄目なら global exclusive latch」の 2 段構え** (`lock_trx_release_read_locks`)。X モード側には `MAX_CS_DURATION` (1 秒) の保持上限があり、S モード側は自分の共有 latch が誰かの exclusive latch 取得を妨げていると判明した時点で自主的に譲る (`is_x_blocked_by_us()`)
+- **`innodb_deadlock_report` という変数は 8.4.11 のソースに存在しない** (`git grep` で 0 ヒット)。関連する既存変数は `innodb_print_all_deadlocks`
+- レビューパスは今回実施していない (依頼側で全ソースリンクを行番号込みで検証済みのため)。次にこの群を触るときは、他群と同様に別エージェントでのソースリンク全数検証パスを検討する
+
+関連: [[mermaid-syntax-check]] (今回も新規 mermaid 4 枚を検証、全て OK)

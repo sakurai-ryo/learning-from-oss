@@ -228,4 +228,5 @@ ALTER TABLE users ADD COLUMN ...;
 - MDL の 11 種と 2 枚の互換行列、`ALTER` が固まる連鎖は[MDL — ALTER が「固まる」正体](./metadata-locking/)
 - デッドロック検出が周期的である理由は[デッドロック検出 — 背景スレッドが wait-for graph を見る](./deadlock-detection/)
 - ロック構造がページ単位である理由と 512 シャードは[lock_sys — 512 シャードと latching](./lock-sys-sharding/)
+- ここまでの「行ロック」はすべてトランザクションが持ちコミットまで生きるものだった。これとは別に、スレッドが数マイクロ秒だけ持つ**ラッチ**という機構が InnoDB にはあり、両者は実装のあちこちで接している。その継ぎ目は[行ロックとページラッチの継ぎ目](./locks-and-page-latches/)で扱う
 - ロックを外す側の順序は[コミットとロールバックの内部](./commit-and-rollback-internals/)

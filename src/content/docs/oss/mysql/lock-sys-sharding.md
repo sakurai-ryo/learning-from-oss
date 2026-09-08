@@ -3,7 +3,7 @@ title: "lock_sys — 512 シャードと latching"
 description: "かつて InnoDB のロックキューは 1 本の lock_sys->mutex で守られていた。8.4 ではページ用 512 個とテーブル用 512 個の mutex に分割され、その上に「全部止める」ための global rw-latch が乗っている。普段は global を S で取ってシャードの mutex を 1〜2 個、デッドロック検出のような全体を見る操作だけ global を X で取る。この 2 層構造と latching order が、ロック周りのコードの形をほぼ決めている。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 83
+  order: 79
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/)
@@ -194,7 +194,24 @@ flowchart TD
 
 [`try_release_all_locks` (`lock0lock.cc#L4125`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L4125)。**「全部 X で取れば簡単だが 3〜11% 遅くなるので、7 段の手順を踏む」**という判断がそのまま書かれている。失敗したら `false` を返して呼び出し側が `std::this_thread::yield()` してやり直す。
 
-同じ理由で `lock_rec_convert_impl_to_expl` ([L5301](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5301)) は、呼び出し元の `Shard_latch_guard` の**外**で呼ばれ、内部で自分のシャード latch を取り直す ([`lock_clust_rec_read_check_and_lock` の L5529-L5535](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5529))。
+同じ理由で `lock_rec_convert_impl_to_expl` ([L5301](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5301)) は、呼び出し元の `Shard_latch_guard` の**外**で呼ばれ、内部で自分のシャード latch を取り直す ([`lock_clust_rec_read_check_and_lock` の L5529-L5535](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L5529))。この「シャード latch を取る前に済ませる」という配置がなぜ latch order 上必須なのかは [行ロックとページラッチの継ぎ目](./locks-and-page-latches/) で扱った——B+tree のページラッチは lock_sys のシャード latch より高いレベルにあるので、シャード latch を持った状態で新たにページラッチを取ることはできない。
+
+### `Trx_locks_cache` — シャード latch の中で繰り返す判定を軽くする
+
+デッドロック検出やロック取得のガード節 ([ロックの種類](./lock-modes-and-types/) の `rec_lock_check_conflict`) は、同じ待ちロックに対して複数の既存ロックを順に比較する。この比較を毎回ゼロから行わずに済ませるためのキャッシュが `locksys::Trx_locks_cache` ([`lock0lock.h#L728`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/include/lock0lock.h#L728)) だ。
+
+```cpp title="storage/innobase/include/lock0lock.h"
+class Trx_locks_cache {
+ private:
+  bool m_computed{false};
+  bool m_has_s_lock_on_record{false};
+  ...
+ public:
+  bool has_granted_blocker(const trx_t *trx, const lock_t *waiting_lock);
+};
+```
+
+同じ `trx` と `heap_no` の組に対する呼び出しをまたいで `m_has_s_lock_on_record` を使い回す、**スタック上に置かれる使い捨てのキャッシュ**で、lock_sys の状態そのものではない。シャード latch (または global latch) を握っている短い区間の中で、同じ判定を何度も呼び出す場所 (`lock_wait_find_and_handle_deadlocks` の候補検証、`lock_rec_has_to_wait_in_queue`) に渡され、latch を長く持たずに済ませるための道具になっている。
 
 ## どう活かすか
 

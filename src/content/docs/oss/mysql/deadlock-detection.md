@@ -3,7 +3,7 @@ title: "デッドロック検出 — 背景スレッドが wait-for graph を見
 description: "InnoDB のデッドロック検出は、待たされているスレッド自身ではなく lock_wait_timeout_thread という背景スレッドが行う。待ち手は「自分を止めているのは誰か」という辺を 1 本置いて眠るだけで、背景スレッドがそのスナップショットから閉路を探し、trx_weight_ge で軽いほうを victim に選んで丸ごとロールバックさせる。だからデッドロックはアプリ側でリトライすべきエラーになる。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 82
+  order: 89
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [RR と RC の違い](./locking-in-rr-vs-rc/)
@@ -37,6 +37,8 @@ sidebar:
 ## ソースコードのどこか
 
 ### 待ち手がすること
+
+待ち手側の経路 (`lock_rec_lock` から `os_event_wait` で実際に眠るまで、そして起きた後のリトライ) を上から下まで追ったものは [1 行に X ロックが付くまで](./lock-acquisition-walkthrough/) にまとめてある。このページでは検出する側 (背景スレッド) に集中するので、待ち手側の記述は最小限にとどめる。
 
 ロックが取れないと `lock_rec_lock_slow` が `RecLock::add_to_waitq` を呼び、その中で辺が張られる。
 

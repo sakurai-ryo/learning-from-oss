@@ -3,7 +3,7 @@ title: "RR と RC の違い — ギャップロックが消える場所"
 description: "REPEATABLE READ と READ COMMITTED の差は、trx_t の 4 つの述語 (skip_gap_locks / allow_semi_consistent / releases_non_matching_rows / releases_gap_locks_at_prepare) にほぼ集約されている。使われているのは主に row0sel.cc・row0ins.cc・ha_innodb.cc・trx0trx.cc で、lock0lock.cc には 2 箇所しか出てこない。RC でもギャップロックが消えない場所と、RC が ROW binlog を要求する理由まで含めて差分だけを並べる。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 79
+  order: 83
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [分離レベルとアノマリ](./isolation-levels-and-anomalies/)
@@ -200,7 +200,7 @@ void ha_innobase::try_semi_consistent_read(bool yes) {
   }
 ```
 
-[`trx_prepare` (`trx0trx.cc#L3024`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/trx/trx0trx.cc#L3024)。[`lock_trx_release_read_locks` (`lock0lock.cc#L4103`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L4103) は共有 latch で 5 回試し、駄目なら global exclusive latch を取って一気に外す。
+[`trx_prepare` (`trx0trx.cc#L3024`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/trx/trx0trx.cc#L3024)。`lock_trx_release_read_locks` (`lock0lock.cc#L4103`) がここで解放を実行するが、latch の取り回し (共有 latch で 5 回試し、駄目なら global exclusive latch に切り替える 2 段構え) は [ロックの解放とコミット時の latch 取り回し](./lock-release-and-commit/) にまとめてあるので、そちらを参照。
 
 デッドロック検出側もこれを知っていて、[`lock_edge_may_survive_prepare` (L1394)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/lock/lock0lock.cc#L1394) が「相手が RC 以下で、こちらが insert intention なら、その待ち辺は PREPARE で消える」と判定してサーバ層に伝える。
 

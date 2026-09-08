@@ -3,7 +3,7 @@ title: "AUTO_INCREMENT の永続化 — 再起動で採番が戻らなくなっ�
 description: "5.7 までの AUTO_INCREMENT カウンタはメモリ上にしかなく、再起動すると SELECT MAX(id)+1 から再開していた。だから最大値の行を削除してから再起動すると同じ値が再び配られた。8.0 は採番の更新を redo に書き、mysql.innodb_dynamic_metadata と DD に落として復元する。その仕組みと、今でも値が飛ぶ場面を読む。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 81
+  order: 86
 ---
 
 > **前提**: [INSERT のロック — insert intention、重複検査、AUTO_INCREMENT](./insert-and-duplicate-check/) / [データディクショナリ](./data-dictionary/)

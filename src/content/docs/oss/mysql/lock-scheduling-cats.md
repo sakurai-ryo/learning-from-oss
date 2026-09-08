@@ -3,7 +3,7 @@ title: "CATS — ロックキューは FIFO ではない"
 description: "InnoDB のロックキューは「先に待った順」では処理されない。待っているトランザクションには「自分が推移的に何本のトランザクションを止めているか」という重み (schedule_weight) が付いていて、ロックが解放されると重い順に許可される。重みを計算するのはデッドロック検出と同じ背景スレッドで、同じ wait-for graph のスナップショットを使い回している。だから innodb_deadlock_detect=OFF にしても、この計算は止まらない。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 86
+  order: 90
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [デッドロック検出](./deadlock-detection/)

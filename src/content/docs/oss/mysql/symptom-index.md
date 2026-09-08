@@ -3,7 +3,7 @@ title: "現象から引く索引 — 症状 → 仕組み → ページ → 確�
 description: "この章は SQL が通る層を上から順に下ってきた。最後に、その順序を逆から引けるようにする。デッドロックが出た、ALTER が固まった、レプリカが遅れた、インデックスが使われない — 現象を起点に、それがどの層の話で、どのページで説明していて、どのビューを見れば裏が取れるかを一覧にする。"
 group: "横断"
 sidebar:
-  order: 127
+  order: 132
 ---
 
 ## 何を学んだか
@@ -63,20 +63,23 @@ sidebar:
 
 ## ロックとトランザクション
 
-| 症状                                             | 仕組み                                                                                     | ページ                                                                       | 確認するビュー                                                                        |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `Deadlock found when trying to get lock`         | wait-for graph に閉路。**検出は待ち手ではなく背景スレッドが行う非同期処理**                | [デッドロック検出](./deadlock-detection/)                                    | `SHOW ENGINE INNODB STATUS` の LATEST DETECTED DEADLOCK、`innodb_print_all_deadlocks` |
-| 同時 `INSERT` でデッドロック                     | 重複検査が next-key lock を取る。**`ON DUPLICATE KEY UPDATE` / `REPLACE` は S ではなく X** | [INSERT のロック](./insert-and-duplicate-check/)                             | 同上                                                                                  |
-| `Lock wait timeout exceeded` (InnoDB 行ロック)   | `innodb_lock_wait_timeout` (既定 50 秒)                                                    | [ロックの種類](./lock-modes-and-types/)                                      | `performance_schema.data_lock_waits` / `sys.innodb_lock_waits`                        |
-| `ER_LOCK_WAIT_TIMEOUT` だが行ロックではない      | MDL の待ち。`lock_wait_timeout` (既定 1 年)                                                | [MDL](./metadata-locking/)                                                   | `performance_schema.metadata_locks`                                                   |
-| ロックしないはずの範囲がロックされる             | RR の next-key lock はギャップを含む。`LOCK_ORDINARY == 0` = フラグなしが next-key         | [ロックの種類](./lock-modes-and-types/) / [RR と RC](./locking-in-rr-vs-rc/) | `data_locks` の `LOCK_MODE` (supremum pseudo-record ならギャップ)                     |
-| RC にしたらロック競合が減った                    | ギャップロックを省く判定が入る。ただし重複検査や外部キー検査では別ルール                   | [RR と RC](./locking-in-rr-vs-rc/)                                           | `data_locks` の `LOCK_MODE`                                                           |
-| RC にしたら `ER_BINLOG_STMT_MODE_AND_ROW_ENGINE` | RC では `HA_BINLOG_STMT_CAPABLE` が落ちる                                                  | [RR と RC](./locking-in-rr-vs-rc/)                                           | `binlog_format`                                                                       |
-| `AUTO_INCREMENT` が飛ぶ                          | `innodb_autoinc_lock_mode` と、失敗したトランザクションが採番を戻さない設計                | [INSERT のロック](./insert-and-duplicate-check/)                             | `SHOW CREATE TABLE` の `AUTO_INCREMENT=`                                              |
-| `History list length` が伸び続ける               | 古い read view が生きている間、purge が undo を消せない                                    | [purge](./purge/) / [read view](./read-view-and-visibility/)                 | `SHOW ENGINE INNODB STATUS` の TRANSACTIONS、`I_S.INNODB_TRX` の `trx_started`        |
-| 更新直後の走査だけ遅い                           | セカンダリインデックスの葉に版がないので、クラスタード側の版鎖を辿っている                 | [セカンダリインデックスと MVCC](./secondary-index-visibility/)               | `Innodb_rows_read` と返却行数の乖離                                                   |
-| 大量 DELETE のロールバックが終わらない           | ロールバックは undo を 1 レコードずつ逆適用する。コミットより遅い                          | [コミットとロールバック](./commit-and-rollback-internals/)                   | `I_S.INNODB_TRX` の `trx_rows_modified`                                               |
-| `SELECT` の結果が古い                            | RR では最初の読みでスナップショットが固定される。RC は文ごと                               | [read view](./read-view-and-visibility/)                                     | `START TRANSACTION WITH CONSISTENT SNAPSHOT` の有無                                   |
+| 症状                                                 | 仕組み                                                                                           | ページ                                                                       | 確認するビュー                                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Deadlock found when trying to get lock`             | wait-for graph に閉路。**検出は待ち手ではなく背景スレッドが行う非同期処理**                      | [デッドロック検出](./deadlock-detection/)                                    | `SHOW ENGINE INNODB STATUS` の LATEST DETECTED DEADLOCK、`innodb_print_all_deadlocks` |
+| 同時 `INSERT` でデッドロック                         | 重複検査が next-key lock を取る。**`ON DUPLICATE KEY UPDATE` / `REPLACE` は S ではなく X**       | [INSERT のロック](./insert-and-duplicate-check/)                             | 同上                                                                                  |
+| `Lock wait timeout exceeded` (InnoDB 行ロック)       | `innodb_lock_wait_timeout` (既定 50 秒)                                                          | [ロックの種類](./lock-modes-and-types/)                                      | `performance_schema.data_lock_waits` / `sys.innodb_lock_waits`                        |
+| `ER_LOCK_WAIT_TIMEOUT` だが行ロックではない          | MDL の待ち。`lock_wait_timeout` (既定 1 年)                                                      | [MDL](./metadata-locking/)                                                   | `performance_schema.metadata_locks`                                                   |
+| ロックしないはずの範囲がロックされる                 | RR の next-key lock はギャップを含む。`LOCK_ORDINARY == 0` = フラグなしが next-key               | [ロックの種類](./lock-modes-and-types/) / [RR と RC](./locking-in-rr-vs-rc/) | `data_locks` の `LOCK_MODE` (supremum pseudo-record ならギャップ)                     |
+| RC にしたらロック競合が減った                        | ギャップロックを省く判定が入る。ただし重複検査や外部キー検査では別ルール                         | [RR と RC](./locking-in-rr-vs-rc/)                                           | `data_locks` の `LOCK_MODE`                                                           |
+| `data_locks` が空なのに `UPDATE` が刺さる            | 暗黙ロック (`DB_TRX_ID`) は `lock_t` を作らないので現れない。競合が起きて初めて行が生える        | [暗黙ロック](./implicit-locks/)                                              | 待ちが起きている瞬間の `data_locks` (平常時のスナップショットは実態を過小評価する)    |
+| `UPDATE` が WHERE に合わない行までロックする         | 書き込み側 (`*_modify_check_and_lock`) はほぼ何もしない。ロックしているのは走査中の locking read | [UPDATE / DELETE のロック取得点](./update-and-delete-locking/)               | RR ではそのまま残り、RC は semi-consistent read が条件不一致の行だけ外す              |
+| コミット/PREPARE が重い (書き込み量では説明できない) | 大量の読みロックを持つトランザクションの解放が S→X latch 切り替えの往復コストを払う              | [ロックの解放](./lock-release-and-commit/)                                   | `wait/synch/rwlock/...lock_sys...` の PFS instrument (`sum_timer_wait`)               |
+| RC にしたら `ER_BINLOG_STMT_MODE_AND_ROW_ENGINE`     | RC では `HA_BINLOG_STMT_CAPABLE` が落ちる                                                        | [RR と RC](./locking-in-rr-vs-rc/)                                           | `binlog_format`                                                                       |
+| `AUTO_INCREMENT` が飛ぶ                              | `innodb_autoinc_lock_mode` と、失敗したトランザクションが採番を戻さない設計                      | [INSERT のロック](./insert-and-duplicate-check/)                             | `SHOW CREATE TABLE` の `AUTO_INCREMENT=`                                              |
+| `History list length` が伸び続ける                   | 古い read view が生きている間、purge が undo を消せない                                          | [purge](./purge/) / [read view](./read-view-and-visibility/)                 | `SHOW ENGINE INNODB STATUS` の TRANSACTIONS、`I_S.INNODB_TRX` の `trx_started`        |
+| 更新直後の走査だけ遅い                               | セカンダリインデックスの葉に版がないので、クラスタード側の版鎖を辿っている                       | [セカンダリインデックスと MVCC](./secondary-index-visibility/)               | `Innodb_rows_read` と返却行数の乖離                                                   |
+| 大量 DELETE のロールバックが終わらない               | ロールバックは undo を 1 レコードずつ逆適用する。コミットより遅い                                | [コミットとロールバック](./commit-and-rollback-internals/)                   | `I_S.INNODB_TRX` の `trx_rows_modified`                                               |
+| `SELECT` の結果が古い                                | RR では最初の読みでスナップショットが固定される。RC は文ごと                                     | [read view](./read-view-and-visibility/)                                     | `START TRANSACTION WITH CONSISTENT SNAPSHOT` の有無                                   |
 
 ## 型・スキーマ定義
 

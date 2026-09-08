@@ -3,7 +3,7 @@ title: "ロックの継承と移動 — ページが割れても隙間は守ら�
 description: "lock_sys は行を (page_id, heap_no) という物理アドレスで識別している。だから B+tree がページを分割・併合・再編成するたび、レコードが動くたびに、ロックを付け替える通知が要る。関数は 15 個ほどあるが、やっていることは move (ビットごと移す) と inherit (ギャップロックとしてコピーする) の 2 つだけだ。「削除された行のギャップロックが次のレコードに移る」という挙動も、purge が呼ぶ lock_update_delete から素直に読める。"
 group: "InnoDB — トランザクション・MVCC・ロック"
 sidebar:
-  order: 85
+  order: 88
 ---
 
 > **前提**: [ロックの種類 (InnoDB)](./lock-modes-and-types/) / [B+tree の操作](./btree-operations/)
@@ -227,6 +227,10 @@ void lock_rec_store_on_page_infimum(
 | `lock_update_insert`                | `btr_cur_optimistic_insert` など             | 次レコードからギャップロックだけ inherit        |
 | `lock_update_delete`                | `btr_cur_*_delete` (主に purge)、ibuf マージ | 次レコードへ inherit + 待機解放                 |
 | `lock_rec_store_on_page_infimum`    | `btr_cur_pessimistic_update`、R-tree 分割    | 移動中のロックを infimum に退避                 |
+
+### 呼ばれる時点で mtr は両方のページを X で持っている
+
+上の表の `lock_update_*` / `lock_move_*` は、どれも B+tree 側の悲観的操作 (`btr_page_split_and_insert` / `btr_compress` / `btr_root_raise_and_insert` など) の中から呼ばれる。これらは `BTR_MODIFY_TREE` で探索した経路であり、**呼ばれた時点で mtr は分割元・分割先・場合によっては親ページまで、複数ページのラッチを X (または SX) で保持している** ([B+tree の操作](./btree-operations/) の `BTR_MODIFY_TREE` 節)。ロックの移動・継承自体は `Shard_latches_guard` (2 ページ分の lock_sys シャード latch をアドレス順に取る、[行ロックとページラッチの継ぎ目](./locks-and-page-latches/)) の中で完結するので、**ページラッチ (B+tree 側) → シャード latch (lock_sys 側) という latch order の一方通行を破らずに、2 つのラッチ機構が同時に動いている**ことになる。ページラッチが分割操作全体を守っているおかげで、ロック移動の途中で他スレッドが同じページを覗きに来ることはない。
 
 ## どう活かすか
 

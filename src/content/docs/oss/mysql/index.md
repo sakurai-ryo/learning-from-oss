@@ -63,12 +63,13 @@ MySQL Server は 30 年近く継ぎ足されてきたコードベースで、**�
 - **`handler` という 20 年前の抽象が今も境界であること。** SQL 層は行を `TABLE::record[0]` というバイト列で受け取り、InnoDB はそこに詰め替える。この境界のせいで ICP や MRR のような「述語をエンジンに降ろす」最適化が、後付けの API として並んでいる
 - **オプティマイザの出力が実行の入力として型で表現し直されたこと。** 旧オプティマイザも hypergraph も、最後は同じ `AccessPath` の木を出す。`EXPLAIN FORMAT=TREE` が読みやすいのはこの構造のおかげだ
 - **InnoDB のロックが「ページ単位の bitmap」であること。** `lock_t` は行 1 件ではなくページ 1 枚に対応し、その中のヒープ番号にビットが立つ。next-key lock がフラグ 0 (`LOCK_ORDINARY`) で表されるのも、この表現から来ている
+- **行ロックとページラッチが、latch order という 1 本の一方通行で継がれていること。** B+tree のページラッチは lock_sys のシャード latch より高いレベルにあり、この向きだけが合法になる。暗黙ロック変換の呼び出し位置から、待ちに入る前に必ずラッチを手放す順序まで、実装のあちこちの形がこの一方通行から導ける
 - **耐久性の実装が lock-free に寄せられたこと。** redo ログバッファへの書き込みは `Link_buf` という リングで調停され、log writer / flusher / notifier の 4 スレッドが並行に進む
 - **8.4 で消えたもの、既定が変わったもの。** change buffer は既定 OFF になり、`I_S.INNODB_LOCKS` は消え、レプリカの依存追跡は WRITESET 固定になった。8.0 時代の記事がそのまま当てはまらない箇所が増えている
 
 ## まず読む 13 ページ
 
-129 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
+134 ページある。全部読む必要はない。**縦の道が 1 本通ればあとは辞書として引ける**ので、最初はこの 13 ページだけを順に読むことを勧める。
 
 1. [用語集](./glossary/) — 通読しなくていい。知らない語に当たったら戻ってくる
 1. [ソースの読み方](./reading-mysql-source/) — `ut_ad` が消えること、`true` がエラーであること。これは通読する
@@ -202,14 +203,19 @@ InnoDB — トランザクション・MVCC・ロック:
 - [行の読み取り経路 — row_search_mvcc が 1 行返すまで](./row-read-path/)
 - [INSERT / UPDATE / DELETE の実装 — DELETE 専用のコードは無い](./row-dml-implementation/)
 - [ロックの種類 — record / gap / next-key / insert intention、暗黙ロック](./lock-modes-and-types/)
+- [lock_sys — 512 シャードと latching](./lock-sys-sharding/)
+- [行ロックとページラッチの継ぎ目 — 一方通行の順序がロック実装を決めている](./locks-and-page-latches/)
+- [1 行に X ロックが付くまで — SQL 実行層から寝て起きるまでの経路](./lock-acquisition-walkthrough/)
+- [暗黙ロック — lock_t を作らない X ロック](./implicit-locks/)
 - [RR と RC の違い — ギャップロックが消える場所](./locking-in-rr-vs-rc/)
 - [INSERT のロック — insert intention、重複検査、AUTO_INCREMENT](./insert-and-duplicate-check/)
+- [UPDATE / DELETE のロック取得点 — クラスタードは素通り、セカンダリが本番](./update-and-delete-locking/)
 - [AUTO_INCREMENT の永続化 — 再起動で採番が戻らなくなった経緯](./auto-increment/)
-- [デッドロック検出 — 背景スレッドが wait-for graph を見る](./deadlock-detection/)
-- [lock_sys — 512 シャードと latching](./lock-sys-sharding/)
 - [テーブルロックと意図ロック — IS / IX / S / X / AUTO-INC の実装](./table-and-intention-locks/)
 - [ロックの継承と移動 — ページが割れても隙間は守られる](./lock-inheritance-and-page-changes/)
+- [デッドロック検出 — 背景スレッドが wait-for graph を見る](./deadlock-detection/)
 - [CATS — ロックキューは FIFO ではない](./lock-scheduling-cats/)
+- [ロックの解放 — 取るときより離すときのほうが latch 戦略が要る](./lock-release-and-commit/)
 - [コミットとロールバックの内部 — InnoDB 側で何が確定するか](./commit-and-rollback-internals/)
 - [XA とセーブポイント — 部分ロールバックと分散トランザクション](./xa-and-savepoint/)
 
