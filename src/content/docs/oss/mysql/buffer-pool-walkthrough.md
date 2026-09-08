@@ -1,6 +1,6 @@
 ---
 title: "バッファプール — buf_page_get_gen が全読み書きの入口"
-description: "InnoDB でディスク上のページに触る道は 1 本しかない。buf_page_get_gen に (space_id, page_no) を渡すと、page hash を引き、なければ読み、LRU に載せ、要求された rw_lock を掛けて、mtr に登録した block を返す。この 1 関数の中に、インスタンス分割・chunk・page hash・page latch・read-ahead の起動点が全部詰まっている。ここで型の関係と latch の取得順を固定しておくと、LRU も page cleaner も read-ahead もこの関数の周辺の話として読める。"
+description: "InnoDB でディスク上のページに触る道は 1 本しかない。buf_page_get_gen に (space_id, page_no) を渡すと、page hash を引き、なければ読み、LRU に載せ、要求された rw_lock を掛けて、mtr に登録した block を返す。この 1 関数の中に、インスタンス分割・chunk・page hash・page latch・read-ahead の起動点が全部詰まっている。ここで型の関係と latch の取得順を固定しておくと、LRU も page cleaner も read-ahead もこの関数の周辺の話として読める。読み込み完了時に誰が block->lock の X を解くか (要求スレッド自身か I/O ハンドラか) までここで閉じる。"
 group: "InnoDB — バッファプール"
 sidebar:
   order: 66
@@ -62,6 +62,24 @@ struct buf_block_t {
 
 `frame` が 16KB のページそのもので、[ページの構造](./page-layout/)で見たバイト列がここに載る。`lock` がそのフレームを守る rw_lock で、これが**ページ latch**と呼ばれるものだ。
 
+記述子 1 枚が同時にどこへ繋がるかをまとめるとこうなる。
+
+```mermaid
+flowchart LR
+    subgraph BLOCK["buf_block_t"]
+        PAGE["buf_page_t page<br/>(先頭フィールド)"]
+        LOCK["lock: BPageLock<br/>ページ latch"]
+        FRAME["frame: byte*"]
+    end
+    PAGE -->|"hash"| PH["page_hash のチェイン<br/>次の buf_page_t*"]
+    PAGE -->|"list"| FLIST["free list または flush list<br/>(state で決まる。両方には載らない)"]
+    PAGE -->|"LRU"| LRUL["LRU list<br/>(flush list とは同時に載れる)"]
+    LOCK -.->|"守る"| FRAME
+    FRAME --> BYTES["16KB のバイト列"]
+```
+
+`hash` / `list` / `LRU` が別フィールドだから、1 つの記述子が page_hash・LRU list・(free または flush) list に同時に載れる。**`list` を free と flush で共有しているから、この 2 つには同時に載れない**という制約もこの図から読める。
+
 ### `buf_pool_t` — インスタンス
 
 [`buf_pool_t` (L2294)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/include/buf0buf.h#L2294) が 1 インスタンスに対応する。`buf_pool_ptr` という配列に `srv_buf_pool_instances` 個並び、それぞれが独立した mutex・リスト・page hash を持つ。
@@ -82,22 +100,35 @@ struct buf_block_t {
 
 `LRU_list_mutex` / `free_list_mutex` / `flush_list_mutex` が別々なので、LRU を走査しているスレッドと flush list を走査しているスレッドはぶつからない。8.0 で `buf_pool->mutex` 1 本を割ったのがこの形だ。
 
-1 インスタンスの持ち物を並べるとこうなる。
+1 インスタンスの持ち物と、それぞれを守る mutex を並べるとこうなる。
 
 ```mermaid
 flowchart TD
     POOL["buf_pool_t (インスタンス i)"]
-    POOL --> CH["chunks[]<br/>innodb_buffer_pool_chunk_size ごとに確保"]
-    POOL --> PH["page_hash<br/>(space_id, page_no) → buf_page_t*"]
-    POOL --> FREE["free list<br/>まだ使っていない block"]
-    POOL --> LRU["LRU list<br/>ファイルページを保持。old/young に分かれる"]
-    POOL --> FL["flush list<br/>dirty page を oldest_modification 順に"]
-    CH -->|"block を切り出す"| FREE
-    FREE -->|"buf_LRU_get_free_block"| LRU
-    LRU -->|"最初の変更で登録"| FL
-    FL -->|"page cleaner が書いたら外す"| LRU
-    LRU -->|"evict すると戻る"| FREE
+    POOL -->|"chunks_mutex"| CH["chunks[]<br/>innodb_buffer_pool_chunk_size ごとに確保"]
+    POOL -->|"page hash lock ×16"| PH["page_hash<br/>(space_id, page_no) → buf_page_t*"]
+    POOL -->|"free_list_mutex"| FREE["free list<br/>まだ使っていない block"]
+    POOL -->|"LRU_list_mutex"| LRU["LRU list<br/>ファイルページを保持。old/young に分かれる"]
+    POOL -->|"flush_list_mutex"| FL["flush list<br/>dirty page を oldest_modification 順に"]
+    CH -.->|"block を切り出す"| FREE
 ```
+
+1 つの block がこの構造の中をどう巡るかは、構造とは別の軸なので状態遷移として分ける。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Free: buf_chunk_init で確保
+    Free --> Old: buf_LRU_get_free_block で取得<br/>ディスク読み込み → LRU の old 領域へ
+    Old --> Young: 1 秒以上あとの 2 回目アクセス
+    Old --> OldDirty: mtr コミットで最初の変更<br/>(同時に flush list にも載る)
+    Young --> YoungDirty: mtr コミットで最初の変更<br/>(同時に flush list にも載る)
+    OldDirty --> Old: page cleaner が書き終えて<br/>flush list から除外
+    YoungDirty --> Young: 同上
+    Old --> Free: evict (buf_LRU_free_page)
+    OldDirty --> Free: BUF_FLUSH_LRU で書きながら evict
+```
+
+dirty な block は LRU から抜けるわけではなく、flush list に**も**載っている状態だという点に注意する。図では `OldDirty` / `YoungDirty` と分けて描いているが、実体は「LRU 上の位置はそのままで `list` が flush list を指している」という 1 つの block だ。
 
 ### chunk — メモリ確保の単位
 
@@ -112,6 +143,27 @@ flowchart TD
       (mem_size / UNIV_PAGE_SIZE) * (sizeof *block) + (UNIV_PAGE_SIZE - 1),
       UNIV_PAGE_SIZE);
 ```
+
+`mem_size` はまずフレーム分 (ページサイズの倍数に切り捨て)、そこに記述子分 (ページサイズの倍数に切り上げ) を足す。実際のメモリ配置はこうなる。
+
+```
+buf_chunk_t
++---------------------------------------------+
+| size   : ulint           frames[] の枚数     |
+| mem    : unsigned char*  ---+                |
+| blocks : buf_block_t*    ---|---+            |
++--------------------------|---|--------------+
+                            |   |
+                            v   v
+mem が指す 1 塊の確保領域
++----------+----------+-----+----------+----------+-----+
+| block[0] | block[1] | ... | frame#0  | frame#1  | ... |
++----------+----------+-----+----------+----------+-----+
+ buf_block_t の配列 (先頭)      16KB フレームの配列 (続き)
+             blocks[i].frame は対応する frame#i を指すよう初期化される
+```
+
+**記述子の配列とフレームの配列が同じ 1 回の OS からの確保に収まっている**ので、chunk を丸ごと解放すれば両方が一度に消える。プールサイズを変えるときに chunk 単位でしか増減できないのはこのためだ。
 
 chunk の大きさは `innodb_buffer_pool_chunk_size` (既定 128MB) で、`buf_pool_size / srv_buf_pool_chunk_unit` が chunk の本数になる ([L1295](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0buf.cc#L1295))。**オンラインでのプールサイズ変更が chunk 単位でしかできない**のはこの構造のためで、`innodb_buffer_pool_size` は「chunk_size × instances」の倍数に丸められる。
 
@@ -368,13 +420,63 @@ evict 側 ([`buf_LRU_free_page` `buf0lru.cc#L1741`](https://github.com/mysql/mys
 
 取り直した後に `buf_page_can_relocate` を**もう一度**確認しているのも同じ理由だ。mutex を離している隙に誰かが buf-fix したかもしれない。
 
+読み取りパスと evict パスが同じ latch 群を逆順に触っている様子を並べるとこうなる。
+
+```mermaid
+flowchart TB
+    subgraph READ["読み取りパス (buf_page_get_gen)"]
+        direction TB
+        R1["1: page hash lock を S"] --> R2["2: block を取得"]
+        R2 --> R3["3: buf_block_fix (atomic)"]
+        R3 --> R4["4: page hash lock を離す"]
+        R4 --> R5["5: block->lock を S/SX/X"]
+    end
+    subgraph EVICT["evict パス (buf_LRU_free_page)"]
+        direction TB
+        E1["LRU_list_mutex を保持したまま"] --> E2["block mutex を離す"]
+        E2 --> E3["page hash lock を X"]
+        E3 --> E4["block mutex を取り直す"]
+        E4 --> E5["buf_page_can_relocate を再確認"]
+    end
+    ORDER["sync0types.h の順序<br/>FLUSH_LIST &lt; FREE_LIST &lt; BLOCK &lt; PAGE_HASH &lt; LRU_LIST"]
+    READ -.->|"外側 (page hash) ほど短く持つ"| ORDER
+    EVICT -.->|"取り直すのは競合の再確認のため"| ORDER
+```
+
+evict パスが block mutex を一度離してから page hash lock を取り直しているのは、**読み取りパスと逆順に取ると欲しい2つが噛み合わないから**だ。先に block mutex を持ったまま page hash lock を待つと、読み取りパスの 1〜4 (page hash lock を先に取る) と正面衝突する。
+
 ### buf-fix されている block は消えない
 
 `buf_fix_count > 0` の block は evict も flush 完了処理も通らない。`buf_page_can_relocate` / `buf_flush_ready_for_replace` がこれを見る。`single_page` の各所に `ut_ad(block->page.buf_fix_count > 0)` が並んでいるのは、この不変条件を関数の途中で落としていないかの検査だ。
 
 ### 読み込み中のページは `block->lock` を X で押さえられている
 
-`buf_page_init_for_read` が `io_fix = BUF_IO_READ` を立てるのと同時に `block->lock` を X で取り、I/O 完了ハンドラが両方を解く。だから読み込み中のページを掴んでしまったスレッドは、`buf_wait_for_read` で S latch を待つだけでよい。**別の同期プリミティブを用意していない**のがポイントで、ページ latch がそのまま「読み込み完了の通知」に使われている。
+[`buf_page_init_for_read`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0buf.cc#L4887) が `io_fix = BUF_IO_READ` を立てるのと同時に `block->lock` を X で取り、[`buf_page_io_complete`](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0buf.cc#L5802) が両方を解く。だから読み込み中のページを掴んでしまったスレッドは、`buf_wait_for_read` で S latch を待つだけでよい。**別の同期プリミティブを用意していない**のがポイントで、ページ latch がそのまま「読み込み完了の通知」に使われている。
+
+**`buf_page_io_complete` を呼ぶのは誰かは、読み込みが同期か非同期かで変わる。** 通常のキャッシュミス (`buf_read_page`、[read-ahead のページ](./read-ahead-and-io/)で見る `sync=true`) は、`fil_io` から戻った**要求スレッド自身**がその場で `buf_page_io_complete` を呼ぶ。I/O ハンドラスレッド経由になるのは read-ahead や `buf_load` のような `sync=false` の経路だけで、そちらは `fil_aio_wait` がハンドラスレッド上で `buf_page_io_complete` を呼ぶ。2 スレッドが絡む場合の流れはこうなる。
+
+```mermaid
+sequenceDiagram
+    participant T1 as T1 (ミスしたスレッド)
+    participant BP as buf_pool (page_hash / LRU)
+    participant IO as ディスク I/O
+    participant T2 as T2 (同じページを要求)
+
+    T1->>BP: lookup() ミス
+    T1->>BP: buf_page_init_for_read
+    Note over BP: free block 取得・page_hash に登録<br/>io_fix = BUF_IO_READ・block->lock を X<br/>LRU old 領域へ挿入
+    T1->>IO: fil_io (sync)
+    T2->>BP: lookup() 空の block にヒット
+    T2->>BP: buf_block_fix
+    T2->>BP: buf_wait_for_read
+    Note over T2: block->lock の S を待って停止
+    IO-->>T1: 読み込み完了
+    T1->>BP: buf_page_io_complete
+    Note over BP: io_fix = NONE<br/>block->lock の X を解放
+    BP-->>T2: S latch が取れて起床
+```
+
+T1 が `fil_io` から戻ってきた**その場**で完了処理まで済ませるので、「読みは同期」というのは待ち時間だけでなく後始末まで含めた話になる。完了処理の中身 (チェックサム検証やページ ID の照合) は[読み込みと I/O のページ](./read-ahead-and-io/)で扱う。
 
 ### ディスクから読んだページは必ず LRU の midpoint に入る
 

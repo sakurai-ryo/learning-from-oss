@@ -1,6 +1,6 @@
 ---
 title: "読み込みと I/O — read-ahead、AIO、O_DIRECT"
-description: "キャッシュミスしたページを 1 枚読むだけでは B+tree のスキャンは速くならない。InnoDB は 64 ページ単位の「領域」を持ち、その境界に来たときアクセス順が揃っているかを調べて、次の領域 64 ページをまとめて非同期で投げる。加えて 8.4 では innodb_flush_method の既定が「起動時に一時ファイルを O_DIRECT で開けるか試して決める」になっており、二重キャッシュの前提が 8.0 から変わっている。"
+description: "キャッシュミスしたページを 1 枚読むだけでは B+tree のスキャンは速くならない。InnoDB は 64 ページ単位の「領域」を持ち、その境界に来たときアクセス順が揃っているかを調べて、次の領域 64 ページをまとめて非同期で投げる。読み込みが完了した後もチェックサム検証とページ ID の照合が buf_page_io_complete の中で走り、通常のキャッシュミスでは要求スレッド自身がその完了処理まで担う。加えて 8.4 では innodb_flush_method の既定が「起動時に一時ファイルを O_DIRECT で開けるか試して決める」になっており、二重キャッシュの前提が 8.0 から変わっている。"
 group: "InnoDB — バッファプール"
 sidebar:
   order: 69
@@ -110,6 +110,35 @@ static const ulint BUF_READ_AHEAD_PORTION = 32;
 ```
 
 **領域の先頭ページか最終ページに来たときだけ判定する**。64 ページのうち 62 枚では即座に return する。この早期脱出があるから、`buf_page_get_gen` の全呼び出しに仕掛けても実質的なコストが乗らない。
+
+```
+read_ahead_area (64 ページ) のうち判定するのは両端の 2 枚だけ
+
+  page_no:  low                                              high-1
+            +----+----+----+--- 判定しない 62 枚 ---+----+----+
+判定対象?     | ●  |    |    |                          |    | ●  |
+            +----+----+----+--------------------------+----+----+
+             境界ページ (low)                    境界ページ (high-1)
+             ここに来たときだけ buf_read_ahead_linear が判定を実行する
+```
+
+判定を通ったときの流れ全体を追うとこうなる。
+
+```mermaid
+flowchart TD
+    A["single_page 末尾<br/>初回アクセスのページ"] --> B{"境界ページか<br/>(low または high-1)"}
+    B -->|"いいえ"| RET0["return 0"]
+    B -->|"はい"| C{"領域がテーブルスペースに<br/>収まるか (high が space_size 以内)"}
+    C -->|"いいえ"| RET0
+    C -->|"はい"| D{"n_pend_reads が<br/>curr_size の半分を超えるか"}
+    D -->|"はい"| RET0
+    D -->|"いいえ"| E["領域内 64 ページを page_hash で引き<br/>access_time の単調性を数える"]
+    E --> F{"乱れが<br/>64 引く innodb_read_ahead_threshold<br/>以内か"}
+    F -->|"いいえ"| RET0
+    F -->|"はい"| G["FIL_PAGE_PREV / FIL_PAGE_NEXT で<br/>次の領域を決める"]
+    G --> H["64 ページを DO_NOT_WAKE で<br/>buf_read_page_low(sync=false) に積む"]
+    H --> I["os_aio_simulated_wake_handler_threads<br/>でまとめて発火"]
+```
 
 次に許容できる乱れの数を決める。
 
@@ -257,7 +286,27 @@ static constexpr uint32_t BUF_READ_AHEAD_PEND_LIMIT = 2;
 
 ### 読み込みの実行
 
-[`buf_read_page_low` (L66)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0rea.cc#L66) が read-ahead と通常読み込みの共通の底になる。
+[`buf_read_page_low` (L66)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0rea.cc#L66) が read-ahead と通常読み込みの共通の底になる。入口は 3 つあるが、**sync/async の違いが完了処理の呼び手を分ける**という点で 1 本の図にまとめられる。
+
+```mermaid
+flowchart TD
+    E1["buf_read_page<br/>(通常のキャッシュミス)"] -->|"sync = true"| LOW["buf_read_page_low"]
+    E2["buf_read_ahead_linear /<br/>buf_read_ahead_random"] -->|"sync = false"| LOW
+    E3["buf_read_page_background<br/>(buf_load)"] -->|"sync = false"| LOW
+    EXC["ibuf bitmap ページ / trx sys header<br/>は sync = true に強制"] -.-> LOW
+    LOW --> INIT["buf_page_init_for_read"]
+    subgraph INIT_STEPS["内部"]
+        direction TB
+        I1["free block 取得"] --> I2["page_hash に X で登録"]
+        I2 --> I3["io_fix = BUF_IO_READ"]
+        I3 --> I4["block->lock を X"]
+        I4 --> I5["LRU old 領域へ挿入"]
+    end
+    INIT --> I1
+    I5 --> FIL["fil_io"]
+    FIL -->|"sync 経路"| SELF["要求スレッド自身が<br/>buf_page_io_complete を呼ぶ"]
+    FIL -->|"async 経路"| AIO["fil_aio_wait<br/>→ I/O ハンドラスレッドが<br/>buf_page_io_complete を呼ぶ"]
+```
 
 ```cpp title="storage/innobase/buf/buf0rea.cc"
   bpage = buf_page_init_for_read(mode, page_id, page_size, unzip);
@@ -285,6 +334,45 @@ static constexpr uint32_t BUF_READ_AHEAD_PEND_LIMIT = 2;
 ```
 
 この 2 種のページは read-ahead の対象からも外されている。
+
+### 読み込みの完了 — `buf_page_io_complete`
+
+[`buf_page_io_complete` (`buf0buf.cc#L5802`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0buf.cc#L5802) が読み込みの後始末をする。呼び手は 2 通りで、通常のキャッシュミスなら [`buf_read_page` の中 (`buf0rea.cc#L145`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/buf/buf0rea.cc#L145) で要求スレッド自身が、read-ahead や `buf_load` なら [`fil_aio_wait` (`fil0fil.cc#L7967`)](https://github.com/mysql/mysql-server/blob/mysql-8.4.11/storage/innobase/fil/fil0fil.cc#L7967) の中で I/O ハンドラスレッドが呼ぶ。関数の先頭にある `current_thread_has_io_responsibility()` の表明が、「この I/O を完了させる責任を持つのは常にこのスレッドだけ」という前提を守る。
+
+```mermaid
+flowchart TD
+    START["buf_page_io_complete<br/>io_type = BUF_IO_READ"] --> CHK["FIL_PAGE_OFFSET / FIL_PAGE_SPACE_ID<br/>を bpage->id と照合"]
+    CHK -->|"不一致"| RETRY["sync_read_page_verify_pageid<br/>で同期再読み込み"]
+    CHK -->|"一致"| CSUM["BlockReporter.is_corrupted()<br/>チェックサム検証"]
+    RETRY --> CSUM
+    CSUM -->|"破損"| ERR{"srv_force_recovery が<br/>SRV_FORCE_IGNORE_CORRUPT 以上か"}
+    ERR -->|"いいえ"| FAIL["buf_read_page_handle_error<br/>false を返す"]
+    ERR -->|"はい"| CONT["握り潰して続行"]
+    CSUM -->|"正常"| CONT
+    CONT --> RECV{"リカバリ中か"}
+    RECV -->|"はい"| RECOVER["recv_recover_page"]
+    RECV -->|"いいえ"| IBUF
+    RECOVER --> IBUF{"リーフの<br/>インデックスページか"}
+    IBUF -->|"はい"| MERGE["ibuf_merge_or_delete_for_page"]
+    IBUF -->|"いいえ"| FIN
+    MERGE --> FIN["io_fix = BUF_IO_NONE<br/>block->lock の X を解放<br/>n_pend_reads--"]
+```
+
+**ページ ID の照合**が最初の関門だ。読み込んだフレームの `FIL_PAGE_OFFSET` / `FIL_PAGE_SPACE_ID` を、要求した `bpage->id` と突き合わせる。一致しなければ `sync_read_page_verify_pageid` で**同期で読み直す**。コードのコメントが理由を明言している。
+
+```cpp title="storage/innobase/buf/buf0buf.cc"
+      /* In HCS environment, an issue is seen whereby the linux AIO system
+      call io_getevents() reports a successful page read, but the buffer
+      block is not having the data from the disk.  To overcome this
+      unexplained behaviour, a synchronous read operation is performed to
+      actually fetch data from the disk. */
+```
+
+**AIO が成功を報告しても中身が来ていないことがある**、という libaio 側の既知の事象への対処が本体コードに組み込まれている。
+
+次が**チェックサム検証**だ。`BlockReporter(...).is_corrupted()` が破損を検出すると、既定 (`srv_force_recovery < SRV_FORCE_IGNORE_CORRUPT`) では `buf_read_page_handle_error` を呼んで `false` を返す。`innodb_force_recovery` を上げていれば握り潰して続行する。リカバリ中なら `recv_recover_page` で redo を適用し、リーフのインデックスページなら [change buffer](./change-buffer/) のマージ (`ibuf_merge_or_delete_for_page`) がここで走る。
+
+最後の仕上げが `buf_page_set_io_fix(bpage, BUF_IO_NONE)` と `rw_lock_x_unlock_gen(&block->lock, BUF_IO_READ)` だ。`_gen` に `BUF_IO_READ` という pass 値を渡しているのは、**ロックしたスレッドと解錠するスレッドが違う**ことがある (read-ahead) からで、通常の再帰チェックを迂回する必要がある。
 
 ### AIO のセグメント
 
@@ -420,3 +508,7 @@ Linux 以外では無条件に `false` を返す。**コンパイル時のマク
 **AIO が native かシミュレートかもエラーログに出る。** `Using Linux native AIO` が出ていなければシミュレート AIO で、こちらは I/O ハンドラスレッドが同期 `pread`/`pwrite` をブロッキングで回す。**tmpfs 上にデータディレクトリを置くと native AIO が無効になる**ので、CI やテスト環境で本番と性能特性が変わる。
 
 **先読みの空振りは LRU の midpoint 方式と噛み合っている。** 先読みしたページは `buf_page_init_for_read` から `buf_LRU_add_block(bpage, true)` で **old 領域に入る**。触られなければ young に上がらず、そのまま押し流される ([LRU のページ](./lru-and-midpoint/))。**空振りしても warm cache は壊れない**ように設計されているので、`read_ahead_evicted` がある程度出ているのは正常だ。ゼロを目指す指標ではない。
+
+**ページ破損は読み込み完了時にしか検出されない。** チェックサム検証は `buf_page_io_complete` の中だけで走る。ディスク上ですでに壊れていても、そのページが実際にバッファプールへ読み込まれるまで誰も気づかない。`CHECK TABLE` が全ページを舐めることに意味があるのはこのためで、逆に言えば**起動しただけでは壊れたページは見つからない**。
+
+**AIO が成功を返してもデータが来ていないことがある。** `buf_page_io_complete` にはページ ID の不一致を検出したら同期で読み直す処理 (`sync_read_page_verify_pageid`) が入っている。エラーログに `ER_IB_MSG_79` (「Space id and page number stored in the page read in are ... should be ...」) が出ていたら、InnoDB ではなくストレージ層か libaio の実装を疑う入口になる。

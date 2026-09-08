@@ -593,3 +593,32 @@ InnoDB 5 群に 12 ページ追加し、章は **126 ページ**になった。�
 - **飢餓対策は「2n 件の予約に追い越されたら `WEIGHT_BOOST`」。** `WEIGHT_BOOST = min(n, 1e9/n)`。待機中ロックの bypass は starvation 回避のため意図的に禁止されている
 - **重みは観測できない。** `schedule_weight` は `data_locks` にも `SHOW ENGINE INNODB STATUS` にも出ず、アルゴリズムを切り替えるシステム変数も 8.4 には無い。見えるのは `INNODB_METRICS` の `lock_schedule_refreshes` だけ
 - **`lock0wait.cc` には実験の記録が長文コメントで残っている。** `infos` を `static` にする / `reserve` する / 自作ハッシュを使う——どれも速くならなかった、変える前に必ず実測しろ、と書いてある
+
+### バッファプール群の増補 (2026-09-08)
+
+ページ数の増減はなし (129 ページのまま)。`buffer-pool-walkthrough` と `read-ahead-and-io` に図を追加し、read-ahead-and-io に「読み込みの完了 — `buf_page_io_complete`」節を新設した。追加ページはしていない — order 66-71 は埋まっており、挿入すると以降 60 ページ弱の振り直しが波及するため。
+
+#### 増補で分かったこと
+
+- **通常のキャッシュミスは要求スレッド自身が `buf_page_io_complete` を呼ぶ。** `buf_read_page` (`sync=true`) は `fil_io` から戻った後その場で完了処理まで済ませる。I/O ハンドラスレッド経由になるのは read-ahead と `buf_load` (`sync=false`) だけで、そちらは `fil_aio_wait` (`fil0fil.cc#L7967`) が呼ぶ
+- **`buf_page_io_complete` にページ ID の照合と同期再読みが入っている。** `sync_read_page_verify_pageid` を呼ぶ条件のコメントが「HCS 環境で `io_getevents()` が成功を報告したのにブロックにデータが入っていない事象がある」と明記している。AIO の成功が中身の到達を保証しない、という libaio 側の既知の不具合への対処
+- **`buf_chunk_t` は `buf0buf.h` ではなく `buf0buf.ic#L53` にある。** ヘッダを検索しても見つからず、`.ic` (inline) ファイルに定義がある
+- **`buf_LRU_get_free_block` の iteration 0/1/>1 の違いは Doxygen コメントに列挙されている** (`buf0lru.cc#L1288-1308`)。iteration 0 は `try_LRU_scan` が立っているときだけ末尾を軽くスキャン、iteration 1 以降は無条件でリスト全体を舐め、iteration 2 以降はさらに 10ms sleep する
+
+### innodb-memory の増補 (2026-09-08)
+
+Alibaba Cloud の "MySQL Memory Allocation and Management" Part I/II (`_600991` / `600992`) を読み、内容を検証したうえで `innodb-memory.md` に取り込んだ。参考文献として同ページ末尾にリンクも置いた。ページ数の増減はなし。
+
+#### 検証で分かったこと (ブログの記述が古い/不正確だった点)
+
+- **`ut_allocator<T>` という単一テンプレートクラスは 8.4 のソースに存在しない。** ブログが説明する「`allocate`/`allocate_large`/アライン済みを 1 クラスで抱え、確保のたびに `ut_new_pfx_t` ヘッダを前置する」設計は、`ut::malloc` / `ut::new_` / `ut::aligned_alloc` / `ut::malloc_large_page` などの用途別関数群 (`_withkey` 版が PFS 計上を担当) に置き換わっている。STL 用の `ut::allocator<T>` はクラスとして残っている
+- **`mem_block_info_t` の `free_block` フィールドは `void*` ではなく `std::atomic<buf_block_t*> *free_block_ptr` になっている。** AHI 用ヒープが予備ページを掴む/手放す操作がスレッドセーフになった
+
+#### 検証で裏取りが取れ、そのまま採用した点
+
+- `mem_heap` の各ブロックは前回の 2 倍で伸び、`MEM_HEAP_DYNAMIC` は `MEM_BLOCK_STANDARD_SIZE` (16KB ページで 8000 バイト)、バッファプール由来のヒープは 1 ページ分で頭打ちになる (`memory.cc` `mem_heap_add_block`)
+- `MEM_HEAP_BTR_SEARCH` のヒープは、AHI の X latch を持ったまま `buf_block_alloc` (LRU evict を要求しうる) を呼ぶとデッドロックしうるため、最初のブロック以降はヒープ自身が予約した予備ページ (`free_block_ptr`) だけを使い回す。尽きたら `mem_heap_add_block` が `nullptr` を返す
+- `buf_block_init` は block 1 個ごとに mutex + rw_lock を作り、`rw_lock_create_func` は呼ぶたびに無条件で `os_event_t` を 2 個生成する (`pthread_cond_t` + 内部 mutex)。デバッグビルドでは `debug_latch` の分でさらに 2 個増える
+- AHI (`buf_pool_get_curr_size() / sizeof(void*) / 64`)・lock_sys (`srv_lock_table_size = 5 * (buf_pool_size / UNIV_PAGE_SIZE)`)・辞書キャッシュの `table_hash` (`buf_pool_get_curr_size() / (512 * UNIV_WORD_SIZE)`) は、初期サイズがどれも `buf_pool_get_curr_size()` から逆算される
+- change buffer の `innodb_change_buffer_max_size` (既定 25、最大 50) はブログどおりだったが、[change-buffer.md](../src/content/docs/oss/mysql/change-buffer.md) で既に「8.4 は `innodb_change_buffering` 既定 OFF なのでこの上限自体が意味を持たない」まで踏み込んで書いてあったため、そちらには追記しなかった
+- SQL 層の `MEM_ROOT` (`include/my_alloc.h` / `mysys/my_alloc.cc`) は既定 512 バイトから始まり 1.5 倍成長 (`AllocBlock`)、ブロックに入らない大きな確保は現在のブロックを差し替えずに 1 つ前へ挿す (`AllocSlow`)、`ClearForReuse` は最後の (最大の) ブロックだけを残す。Valgrind/ASAN ビルドでは `MEM_ROOT_SINGLE_CHUNKS` が立ちこの最適化が丸ごと無効になる。既存の [parse-tree-and-contextualize.md](../src/content/docs/oss/mysql/parse-tree-and-contextualize.md) が使う側 (`parser_max_mem_size` → `set_max_capacity`) を扱っていたので、`innodb-memory.md` 側は実装のメカニズムを担当する形で棲み分けた
